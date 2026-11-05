@@ -1,0 +1,274 @@
+{% extends "base.html" %}
+{% block title %}{{ dataset.study_name }} · StudyDash{% endblock %}
+{% block content %}
+  {% macro render_chart(entry) %}
+    {% set chart = entry.chart %}
+    {% set chart_index = entry.index %}
+    <article class="chart-card" data-chart-name="{{ chart.name }}">
+      <div class="chart-title">
+        <div><h3>{{ chart.name }}</h3>{% if chart.description %}<p class="chart-description">{{ chart.description }}</p>{% endif %}<p>{{ chart.summary }}</p></div>
+        {% if codebook %}
+          {% set current_list = codebook.variables.variable_lists.get(chart.name, chart.response_list or "") %}
+          <details class="chart-mapping">
+            <summary class="chart-menu" aria-label="Map {{ chart.name }} to a codebook response list" title="Map to codebook">◫</summary>
+            <form class="chart-mapping-form" method="post" action="{{ url_for('save_codebook_mapping', dataset_id=dataset.id) }}">
+              <input type="hidden" name="column" value="{{ chart.name }}">
+              <label for="chart-list-{{ chart_index }}">Response list</label>
+              <select id="chart-list-{{ chart_index }}" name="list_name">
+                <option value="">No codebook mapping</option>
+                {% for list_name in codebook.variables.lists|sort %}
+                  <option value="{{ list_name }}"{% if current_list == list_name %} selected{% endif %}>{{ list_name }}</option>
+                {% endfor %}
+              </select>
+              <button class="button mapping-button" type="submit">Save mapping</button>
+            </form>
+          </details>
+        {% else %}
+          <span class="chart-menu" aria-hidden="true">◫</span>
+        {% endif %}
+      </div>
+      <div class="chart-variants">
+        {% for variant in chart.variants %}
+          <section class="chart-variant">
+            <h4>{{ variant.label }}</h4>
+            <div class="chart-visual" data-chart-host="{{ chart_index }}-{{ loop.index0 }}" role="img" aria-label="{{ chart.name }} {{ variant.label }}"></div>
+          </section>
+        {% endfor %}
+      </div>
+      {% if chart.kind == "categories" %}
+        <label class="category-filter" for="filter-{{ chart_index }}">Filter response</label>
+        <select id="filter-{{ chart_index }}" class="category-filter-select" data-category-filter="{{ chart_index }}">
+          <option value="all">All responses</option>
+        </select>
+        <h4 class="frequency-heading">Response frequencies</h4>
+        <div class="frequency-table-host" data-frequency-host="{{ chart_index }}"></div>
+      {% endif %}
+      <p class="chart-caption">Charts use this study’s cleaned records. The complete output is in the download report.</p>
+    </article>
+  {% endmacro %}
+  <a class="back-link" href="{{ url_for('index') }}">← All studies</a>
+  <section class="dashboard-heading">
+    <div><p class="eyebrow">STUDY DASHBOARD</p><h1>{{ dataset.study_name }}</h1><p class="intro">{{ dataset.filename }} · Uploaded {{ dataset.uploaded_at.strftime('%b %d, %Y at %H:%M') }}{% if codebook %} · Codebook: {{ codebook.filename }}{% endif %}</p></div>
+    <a class="button report-button" href="{{ url_for('download_report', dataset_id=dataset.id) }}"><span>↓</span> Download cleaning report &amp; data</a>
+  </section>
+
+  <section class="metrics">
+    <article class="metric-card"><span class="metric-icon violet">▤</span><span class="metric-label">Records</span><strong>{{ "{:,}".format(dataset.rows) }}</strong><small>after cleaning</small></article>
+    <article class="metric-card"><span class="metric-icon blue">⌗</span><span class="metric-label">Variables</span><strong>{{ dataset.columns }}</strong><small>data columns</small></article>
+    <article class="metric-card"><span class="metric-icon green">✓</span><span class="metric-label">PID duplicate groups</span><strong>{{ "{:,}".format(identical_pid_groups|length + differing_pid_groups|length) }}</strong><small>available to review</small></article>
+    <button class="metric-card missing-pids-card" id="missing-pids-toggle" type="button" aria-expanded="false" aria-controls="missing-pid-records">
+      <span class="metric-icon amber">✳</span><span class="metric-label">Missing PIDs</span><strong>{{ "{:,}".format(missing_pid_rows|length) }}</strong><small>rows without a PID · click to view</small>
+    </button>
+  </section>
+
+  {% if pid_candidates %}
+    <button class="button pid-rows-toggle" id="all-pids-toggle" type="button" aria-expanded="false" aria-controls="all-pid-records">View all PID rows</button>
+    <button class="button pid-rows-toggle sequence-gaps-toggle" id="pid-gaps-toggle" type="button" aria-expanded="false" aria-controls="pid-sequence-gaps">
+      View potential missing PID numbers ({{ "{:,}".format(pid_sequence_gap_count) }})
+    </button>
+  {% endif %}
+
+  {% if pid_candidates %}
+    <section class="missing-pid-records" id="pid-sequence-gaps" hidden>
+      <div class="section-heading">
+        <div><p class="eyebrow">PID SEQUENCE CHECK</p><h2>Potential missing PID numbers</h2></div>
+        <span class="muted">Numeric gaps between observed PIDs; verify against your study records.</span>
+      </div>
+      {% if pid_sequence_gaps %}
+        <div class="table-wrap"><table><thead><tr><th>PID field</th><th>Potential missing PID number</th></tr></thead><tbody>
+          {% for gap_group in pid_sequence_gaps %}
+            {% for missing_id in gap_group.missing_ids %}
+              <tr><td>{{ gap_group.column }}</td><td>{{ missing_id }}</td></tr>
+            {% endfor %}
+          {% endfor %}
+        </tbody></table></div>
+      {% else %}
+        <p class="duplicate-empty">No internal numeric PID sequence gaps were detected.</p>
+      {% endif %}
+    </section>
+  {% endif %}
+
+  <section class="missing-pid-records" id="missing-pid-records" hidden>
+    <div class="section-heading">
+      <div><p class="eyebrow">DATA QUALITY REVIEW</p><h2>Rows missing a PID</h2></div>
+      <span class="muted">{% if pid_candidates %}Missing across all detected PID fields: {{ pid_candidates|join(", ") }}{% else %}No PID-like fields detected{% endif %}</span>
+    </div>
+    {% if missing_pid_rows %}
+      <div class="table-wrap"><table><thead><tr><th>Row</th>{% for column in dataset.column_names %}<th>{{ column }}</th>{% endfor %}</tr></thead><tbody>
+        {% for entry in missing_pid_rows %}
+          <tr><td>{{ entry.index + 1 }}</td>{% for column in dataset.column_names %}<td>{{ entry.record.get(column) if entry.record.get(column) is not none else "—" }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody></table></div>
+    {% else %}
+      <p class="duplicate-empty">No rows are missing all detected PID values.</p>
+    {% endif %}
+  </section>
+
+  {% if pid_candidates %}
+    <section class="missing-pid-records" id="all-pid-records" hidden>
+      <div class="section-heading">
+        <div><p class="eyebrow">PID VERIFICATION</p><h2>All PID rows</h2></div>
+        <span class="muted">{{ all_pid_rows|length }} records · sorted by PID number</span>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>Row</th>{% for column in dataset.column_names %}<th>{{ column }}</th>{% endfor %}</tr></thead><tbody>
+        {% for entry in all_pid_rows %}
+          <tr><td>{{ entry.index + 1 }}</td>{% for column in dataset.column_names %}<td>{{ entry.record.get(column) if entry.record.get(column) is not none else "—" }}</td>{% endfor %}</tr>
+        {% endfor %}
+      </tbody></table></div>
+    </section>
+  {% endif %}
+
+  <section class="duplicate-section" id="duplicate-review">
+    <div class="section-heading">
+      <div><p class="eyebrow">DATA QUALITY REVIEW</p><h2>PID duplicate review</h2></div>
+      <span class="muted">Uploaded rows are retained until you choose to drop one.</span>
+    </div>
+    {% if pid_candidates %}
+      {% if pid_candidates|length > 1 %}
+        <form class="pid-selection-form" method="post" action="{{ url_for('save_pid_selection', dataset_id=dataset.id) }}">
+          <label for="pid-column">Identify duplicates using</label>
+          <select id="pid-column" name="pid_column" required>
+            <option value="">Choose a PID field</option>
+            {% for column in pid_candidates %}
+              <option value="{{ column }}"{% if column == pid_column %} selected{% endif %}>{{ column }}</option>
+            {% endfor %}
+          </select>
+          <button class="button mapping-button" type="submit">Use this PID</button>
+        </form>
+      {% elif pid_column %}
+        <p class="pid-selection-note">Duplicate checks use <strong>{{ pid_column }}</strong>.</p>
+      {% endif %}
+      {% if pid_column %}
+        <p class="pid-selection-note">Duplicate groups are identified using <strong>{{ pid_column }}</strong>. Other detected PID fields are shown for reference and do not count as answer differences.</p>
+        <details class="duplicate-category">
+          <summary class="duplicate-category-toggle">
+            <span>Identical rows with matching PIDs</span>
+            <span class="related-chart-count">{{ identical_pid_groups|length }} groups</span>
+          </summary>
+          {% if identical_pid_groups %}
+            {% for group in identical_pid_groups %}
+              <details class="duplicate-pid-group">
+                <summary>PID {{ group.pid }} · {{ group.rows|length }} identical rows</summary>
+                {% include "duplicate_comparison.html" %}
+              </details>
+            {% else %}
+              <p class="duplicate-empty">No identical rows share a PID.</p>
+            {% endfor %}
+          {% else %}
+            <p class="duplicate-empty">No identical rows share a PID.</p>
+          {% endif %}
+        </details>
+        <details class="duplicate-category">
+          <summary class="duplicate-category-toggle">
+            <span>Matching {{ pid_column }} values with different answers</span>
+            <span class="related-chart-count">{{ differing_pid_groups|length }} groups</span>
+          </summary>
+          {% if differing_pid_groups %}
+            {% for group in differing_pid_groups %}
+              <details class="duplicate-pid-group" open>
+                <summary>PID {{ group.pid }} · {{ group.rows|length }} rows differ</summary>
+                {% include "duplicate_comparison.html" %}
+              </details>
+            {% else %}
+              <p class="duplicate-empty">No differing rows share a PID.</p>
+            {% endfor %}
+          {% else %}
+            <p class="duplicate-empty">No differing rows share a PID.</p>
+          {% endif %}
+        </details>
+      {% endif %}
+    {% else %}
+      <p class="duplicate-empty">No PID-like field was detected in this dataset, so duplicate review is unavailable.</p>
+    {% endif %}
+  </section>
+
+  <section class="charts-section">
+    <div class="section-heading"><div><p class="eyebrow">AUTOMATIC ANALYSIS</p><h2>Explore your data</h2></div><span class="muted">{{ charts|length }} variables · one recommended chart per field</span></div>
+    {% if charts %}
+      <div class="chart-search">
+        <label for="chart-search-input">Find a question or field</label>
+        <input id="chart-search-input" type="search" placeholder="Search graphs by name…" autocomplete="off">
+        <label class="chart-search-select-label" for="chart-field-select">Choose field</label>
+        <select id="chart-field-select" aria-label="Choose a field to view">
+          <option value="">All fields</option>
+        </select>
+        <span id="chart-search-results" class="muted" aria-live="polite">{{ charts|length }} graphs</span>
+      </div>
+    {% endif %}
+    {% if codebook %}
+      <label class="language-control" for="label-language">Response labels
+        <select id="label-language" aria-label="Response label language">
+          <option value="en" selected>English</option>
+          <option value="ny">Chichewa</option>
+        </select>
+      </label>
+      {% if codebook.variables.warnings %}
+        <details class="codebook-notice">
+          <summary class="mapping-toggle">Review codebook structure</summary>
+          <div class="mapping-content">
+            <p>The codebook was uploaded, but some parts could not be applied automatically:</p>
+            <ul>
+              {% for warning in codebook.variables.warnings %}
+                <li>{{ warning }}</li>
+              {% endfor %}
+            </ul>
+            <p>Detected columns: {{ codebook.variables.source_columns|join(", ") or "none" }}</p>
+          </div>
+        </details>
+      {% endif %}
+    {% endif %}
+    {% if codebook and codebook.unmatched_variables %}
+      <details class="codebook-notice">
+        <summary class="mapping-toggle">Review response-list mappings</summary>
+        <div class="mapping-content">
+          <p>Some coded columns could match more than one response list. Choose the correct list for each column; labels are not guessed.</p>
+          {% for column in codebook.unmatched_variables %}
+            <form class="mapping-form" method="post" action="{{ url_for('save_codebook_mapping', dataset_id=dataset.id) }}">
+              <input type="hidden" name="column" value="{{ column }}">
+              <label for="list-{{ loop.index }}">{{ column }}</label>
+              <select id="list-{{ loop.index }}" name="list_name" required>
+                {% for list_name in codebook.variables.candidates[column] %}
+                  <option value="{{ list_name }}">{{ list_name }}</option>
+                {% endfor %}
+              </select>
+              <button class="button mapping-button" type="submit">Apply response list</button>
+            </form>
+          {% endfor %}
+        </div>
+      </details>
+    {% endif %}
+    {% if charts %}
+      <script id="chart-data" type="application/json">{{ charts|tojson }}</script>
+      <script id="label-map-data" type="application/json">{{ label_maps|tojson }}</script>
+      <div class="chart-grid">
+        {% for section in chart_sections %}
+          {% if section.related %}
+            <details class="related-chart-group">
+              <summary class="related-chart-toggle">
+                <span>{{ section.title }}</span>
+                <span class="related-chart-count">{{ section.charts|length }} related fields</span>
+              </summary>
+              <div class="chart-grid related-chart-grid">
+                {% for entry in section.charts %}{{ render_chart(entry) }}{% endfor %}
+              </div>
+            </details>
+          {% else %}
+            {% for entry in section.charts %}{{ render_chart(entry) }}{% endfor %}
+          {% endif %}
+        {% endfor %}
+      </div>
+      <script src="{{ url_for('static', filename='charts.js') }}" defer></script>
+    {% else %}
+      <div class="empty-state"><span>◫</span><strong>No chartable columns found</strong><p>This dataset was cleaned, but it doesn’t contain values that can be visualized.</p></div>
+    {% endif %}
+  </section>
+
+  <section class="preview-section">
+    <div class="section-heading"><div><p class="eyebrow">CLEANED DATA</p><h2>Data preview</h2></div><span class="muted">First {{ preview|length }} records · all rows in downloaded report</span></div>
+    <div class="table-wrap"><table><thead><tr>{% for column in dataset.column_names %}<th>{{ column }}</th>{% endfor %}</tr></thead><tbody>
+      {% for row in preview %}<tr>{% for column in dataset.column_names %}<td{% if column in label_maps %} data-label-column="{{ column }}" data-raw-value="{{ row[column] }}"{% endif %}>{{ row[column] if row[column] is not none else "—" }}</td>{% endfor %}</tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+
+  <script src="{{ url_for('static', filename='dashboard.js') }}" defer></script>
+{% endblock %}

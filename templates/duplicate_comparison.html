@@ -1,0 +1,37 @@
+<div class="duplicate-table-wrap">
+  <table class="duplicate-comparison">
+    <thead>
+      <tr>
+        <th>Field</th>
+        {% for row in group.rows %}
+          <th>Row {{ row.index + 1 }}<br><small>{{ pid_column }}: {{ row.pid }}</small></th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for column in dataset.column_names %}
+        <tr>
+          <th>{{ column }}</th>
+          {% for row in group.rows %}
+            <td{% if column in group.different_columns %} class="duplicate-different-cell"{% endif %}>
+              <form class="duplicate-cell-form" method="post" action="{{ url_for('edit_duplicate_row', dataset_id=dataset.id) }}">
+                <input type="hidden" name="row_index" value="{{ row.index }}">
+                <input type="hidden" name="column" value="{{ column }}">
+                <input aria-label="Edit {{ column }} in row {{ row.index + 1 }}" name="value" value="{{ row.record.get(column) if row.record.get(column) is not none else '' }}">
+                <button type="submit">Save</button>
+              </form>
+            </td>
+          {% endfor %}
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<div class="duplicate-row-actions">
+  {% for row in group.rows %}
+    <form method="post" action="{{ url_for('drop_duplicate_row', dataset_id=dataset.id) }}" onsubmit="return confirm('Drop row {{ row.index + 1 }} from the cleaned dataset?')">
+      <input type="hidden" name="row_index" value="{{ row.index }}">
+      <button class="button duplicate-drop-button" type="submit">Drop row {{ row.index + 1 }}</button>
+    </form>
+  {% endfor %}
+</div>
