@@ -49,6 +49,9 @@ class StudyDataset(db.Model):
     missing_values_filled = db.Column(db.Integer, nullable=False)
     column_names = db.Column(db.JSON, nullable=False)
     records = db.Column(db.JSON, nullable=False)
+    # Optional local path note — set by the user after upload so they can find
+    # their copy of the dataset file at any time.
+    saved_path = db.Column(db.String(500), nullable=True)
 
 
 class StudyPidSelection(db.Model):
@@ -141,8 +144,15 @@ def clean_dataframe(
 
 def read_upload(upload):
     extension = os.path.splitext(upload.filename)[1].lower()
-    if extension == ".csv":
-        return pd.read_csv(upload)
+    if extension in (".csv", ".tsv"):
+        pos = upload.tell() if hasattr(upload, "tell") else None
+        line = upload.readline()
+        if isinstance(line, bytes):
+            line = line.decode("utf-8", errors="ignore")
+        sep = "\t" if "\t" in line else ","
+        if pos is not None and hasattr(upload, "seek"):
+            upload.seek(pos)
+        return pd.read_csv(upload, sep=sep)
     if extension in (".xlsx", ".xls"):
         return pd.read_excel(upload)
     raise ValueError("Upload a CSV or Excel file (.csv, .xlsx, .xls).")
@@ -164,10 +174,23 @@ def normalize_code(value):
         try:
             number = Decimal(text)
             if number.is_finite():
+                if number == number.to_integral():
+                    return str(int(number))
                 return str(number.normalize())
-        except InvalidOperation:
+        except (InvalidOperation, ValueError):
             pass
     return text
+
+
+def extract_option_match(column):
+    match = re.match(r"^(.*?)([/_\.\s]|(?<=[a-zA-Z]))([0-9]+)$", str(column).strip())
+    if match:
+        stem = match.group(1).rstrip("/_.- ")
+        delimiter = match.group(2)
+        code = match.group(3)
+        if stem:
+            return stem, code, delimiter
+    return None, None, None
 
 
 def is_excluded_visualization_column(column):
@@ -204,37 +227,50 @@ def is_excluded_visualization_column(column):
 
 
 def group_question_columns(df):
-    option_pattern = re.compile(r"(.+)/([0-9]+)")
+    columns = list(df.columns) if hasattr(df, "columns") else list(df)
     eligible_columns = [
         str(column)
-        for column in df.columns
+        for column in columns
         if not is_excluded_visualization_column(column)
     ]
-    options_by_question = {}
-    for column in eligible_columns:
-        match = option_pattern.fullmatch(column)
-        if match:
-            options_by_question.setdefault(match.group(1), []).append(column)
+    col_lookup = {col.casefold(): col for col in eligible_columns}
+    options_by_stem = {}
 
-    multiple_response_questions = {
-        question: columns
-        for question, columns in options_by_question.items()
-        if len(columns) > 1
-    }
+    for column in eligible_columns:
+        stem, code, delimiter = extract_option_match(column)
+        if stem is not None:
+            options_by_stem.setdefault(stem.casefold(), []).append(
+                (column, stem, code, delimiter)
+            )
+
+    multiple_response_questions = {}
+    for stem_lower, items in options_by_stem.items():
+        has_delimited = any(item[3] in {"/", "_", ".", " "} for item in items)
+        if len(items) > 1 or (stem_lower in col_lookup and has_delimited):
+            canonical_name = col_lookup.get(stem_lower, items[0][1])
+            items_sorted = sorted(items, key=lambda x: int(x[2]))
+            multiple_response_questions[canonical_name] = [x[0] for x in items_sorted]
+
+    subcolumn_to_group = {}
+    for group_name, cols in multiple_response_questions.items():
+        for col in cols:
+            subcolumn_to_group[col] = group_name
+
+    mr_names_lower = {k.casefold(): k for k in multiple_response_questions}
+
     groups = {}
     for column in eligible_columns:
-        match = option_pattern.fullmatch(column)
-        if match and match.group(1) in multiple_response_questions:
-            question = match.group(1)
-            groups.setdefault(question, []).append(column)
-        elif match:
-            groups[column] = [column]
-        elif column not in multiple_response_questions:
+        if column in subcolumn_to_group:
+            group_name = subcolumn_to_group[column]
+            if group_name not in groups:
+                groups[group_name] = multiple_response_questions[group_name]
+        elif column.casefold() in mr_names_lower:
+            group_name = mr_names_lower[column.casefold()]
+            if group_name not in groups:
+                groups[group_name] = multiple_response_questions[group_name]
+        else:
             groups[column] = [column]
 
-    for columns in groups.values():
-        if len(columns) > 1:
-            columns.sort(key=lambda column: int(option_pattern.fullmatch(column).group(2)))
     return groups
 
 
@@ -404,6 +440,7 @@ def multiselect_selection(value):
 
 
 def multiselect_labels(question, columns, codebook):
+    codebook = codebook or {}
     variable_lists = codebook.get("variable_lists", {})
     response_lists = codebook.get("lists", {})
     list_name = variable_lists.get(question)
@@ -423,24 +460,52 @@ def multiselect_labels(question, columns, codebook):
         if len(mapped_lists) == 1:
             list_name = next(iter(mapped_lists))
 
+    option_codes = []
+    for column in columns:
+        _, code, _ = extract_option_match(column)
+        option_codes.append(code if code is not None else str(column))
+
+    if list_name is None and response_lists:
+        matching_by_codes = [
+            name
+            for name, ch in response_lists.items()
+            if set(option_codes).issubset(
+                set(ch.keys()) | {normalize_code(k) for k in ch.keys()}
+            )
+        ]
+        if len(matching_by_codes) == 1:
+            list_name = matching_by_codes[0]
+        elif len(matching_by_codes) > 1:
+            overlap = [
+                name
+                for name in matching_by_codes
+                if name.casefold() in question.casefold()
+                or question.casefold() in name.casefold()
+            ]
+            if len(overlap) == 1:
+                list_name = overlap[0]
+
     choices = response_lists.get(list_name, {}) if list_name else {}
-    option_pattern = re.compile(r".+/([0-9]+)")
-    option_codes = [option_pattern.fullmatch(column).group(1) for column in columns]
     if not choices:
         return [f"Option {code}" for code in option_codes], [
             f"Option {code}" for code in option_codes
         ], list_name
 
+    def lookup_choice(code):
+        norm = normalize_code(code)
+        entry = choices.get(code) or (choices.get(norm) if norm else None) or {}
+        return entry
+
     english = [
-        choices.get(code, {}).get("en")
-        or choices.get(code, {}).get("ny")
-        or code
+        lookup_choice(code).get("en")
+        or lookup_choice(code).get("ny")
+        or f"Option {code}"
         for code in option_codes
     ]
     chichewa = [
-        choices.get(code, {}).get("ny")
-        or choices.get(code, {}).get("en")
-        or code
+        lookup_choice(code).get("ny")
+        or lookup_choice(code).get("en")
+        or f"Option {code}"
         for code in option_codes
     ]
     return english, chichewa, list_name
@@ -679,6 +744,147 @@ def codebook_labels(codebook, column):
     return codebook.get("lists", {}).get(list_name, {}) if list_name else {}
 
 
+def build_single_column_chart(
+    column, frame, variable_lists, response_lists, coded_columns, description=""
+):
+    values = frame[column].dropna()
+    if values.empty:
+        return None
+    list_name = variable_lists.get(column)
+    value_labels = response_lists.get(list_name, {})
+    if column in coded_columns and not list_name:
+        return {
+            "name": column,
+            "description": description,
+            "kind": "unmapped",
+            "summary": "Choose the matching response list to display labels.",
+            "variants": [],
+        }
+    if value_labels:
+        codes = values.map(normalize_code)
+        frequencies = codes.value_counts().head(10)
+        category_codes = frequencies.index.tolist()
+        ordered_english = [
+            value_labels.get(code, {}).get("en")
+            or value_labels.get(code, {}).get("ny")
+            or f"Unlabelled ({code})"
+            for code in category_codes
+        ]
+        ordered_chichewa = [
+            value_labels.get(code, {}).get("ny")
+            or value_labels.get(code, {}).get("en")
+            or f"Unlabelled ({code})"
+            for code in category_codes
+        ]
+        variants = [
+            categorical_chart_variant(
+                ordered_english,
+                ordered_english,
+                ordered_chichewa,
+                frequencies.tolist(),
+                category_count=values.nunique(),
+                codes=category_codes,
+            )
+        ]
+        return {
+            "name": column,
+            "description": description,
+            "kind": "categories",
+            "coded": True,
+            "response_list": list_name,
+            "variants": variants,
+            "summary": (
+                f"{len(values):,} responses · {len(frequencies):,} response "
+                f"categories · response list: {list_name}"
+            ),
+        }
+    elif pd.api.types.is_numeric_dtype(values):
+        numeric = pd.to_numeric(values, errors="coerce").dropna()
+        if numeric.empty:
+            return None
+        bin_count = min(8, max(1, numeric.nunique()))
+        counts, edges = pd.cut(numeric, bins=bin_count, retbins=True)
+        histogram = counts.value_counts(sort=False)
+        labels = [
+            f"{edges[index]:g}–{edges[index + 1]:g}"
+            for index in range(len(edges) - 1)
+        ]
+        return {
+            "name": column,
+            "description": description,
+            "kind": "numeric",
+            "variants": [
+                {
+                    "type": "histogram",
+                    "label": "Histogram",
+                    "labels": labels,
+                    "labels_en": labels,
+                    "labels_ny": labels,
+                    "values": [int(value) for value in histogram.tolist()],
+                }
+            ],
+            "summary": (
+                f"{len(numeric):,} values · Average {numeric.mean():,.2f} · "
+                f"Median {numeric.median():,.2f}"
+            ),
+        }
+    else:
+        raw_values = values.astype(str)
+        looks_like_date = (
+            raw_values.str.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}").mean() >= 0.8
+        )
+        parsed_dates = (
+            pd.to_datetime(raw_values, errors="coerce", format="mixed", utc=True)
+            if looks_like_date
+            else pd.Series(dtype="datetime64[ns, UTC]")
+        )
+        if looks_like_date and parsed_dates.notna().sum() >= len(raw_values) * 0.8:
+            date_values = parsed_dates.dropna()
+            periods = date_values.dt.tz_localize(None).dt.to_period("M").astype(str)
+            frequencies = periods.value_counts().sort_index().tail(18)
+            return {
+                "name": column,
+                "description": description,
+                "kind": "date",
+                "variants": [
+                    {
+                        "type": "line",
+                        "label": "Trend line",
+                        "labels": frequencies.index.tolist(),
+                        "labels_en": frequencies.index.tolist(),
+                        "labels_ny": frequencies.index.tolist(),
+                        "values": [int(value) for value in frequencies.tolist()],
+                    }
+                ],
+                "summary": (
+                    f"{len(date_values):,} dated records · "
+                    f"latest {len(frequencies):,} months"
+                ),
+            }
+
+        frequencies = raw_values.value_counts().head(10)
+        variants = [
+            categorical_chart_variant(
+                frequencies.index.tolist(),
+                frequencies.index.tolist(),
+                frequencies.index.tolist(),
+                frequencies.tolist(),
+                category_count=raw_values.nunique(),
+            )
+        ]
+        return {
+            "name": column,
+            "description": description,
+            "kind": "categories",
+            "coded": False,
+            "variants": variants,
+            "summary": (
+                f"{values.nunique():,} unique values · "
+                f"showing top {len(frequencies)}"
+            ),
+        }
+
+
 def dashboard_data(dataset, codebook=None):
     codebook = codebook or {}
     frame = pd.DataFrame(dataset.records, columns=dataset.column_names)
@@ -714,6 +920,10 @@ def dashboard_data(dataset, codebook=None):
                     "kind": "categories",
                     "coded": bool(list_name),
                     "response_list": list_name,
+                    "is_grouped": True,
+                    "is_subcolumn": False,
+                    "is_base_column": False,
+                    "group_columns": question_columns,
                     "variants": [
                         {
                             "type": "bar",
@@ -731,158 +941,85 @@ def dashboard_data(dataset, codebook=None):
                     ),
                 }
             )
-            continue
 
-        column = question_columns[0]
-        values = frame[column].dropna()
-        if values.empty:
-            continue
-        description = ""
-        list_name = variable_lists.get(column)
-        value_labels = response_lists.get(list_name, {})
-        if column in coded_columns and not list_name:
-            charts.append(
-                {
-                    "name": column,
-                    "description": "",
-                    "kind": "unmapped",
-                    "summary": "Choose the matching response list to display labels.",
-                    "variants": [],
-                }
-            )
-            continue
-        if value_labels:
-            codes = values.map(normalize_code)
-            frequencies = codes.value_counts().head(10)
-            category_codes = frequencies.index.tolist()
-            ordered_english = [
-                value_labels.get(code, {}).get("en")
-                or value_labels.get(code, {}).get("ny")
-                or f"Unlabelled ({code})"
-                for code in category_codes
-            ]
-            ordered_chichewa = [
-                value_labels.get(code, {}).get("ny")
-                or value_labels.get(code, {}).get("en")
-                or f"Unlabelled ({code})"
-                for code in category_codes
-            ]
-            variants = [
-                categorical_chart_variant(
-                    ordered_english,
-                    ordered_english,
-                    ordered_chichewa,
-                    frequencies.tolist(),
-                    category_count=values.nunique(),
-                    codes=category_codes,
+            # Sub-column charts for individual drilldown
+            for sub_col, en_label, ny_label in zip(
+                question_columns, english_labels, chichewa_labels
+            ):
+                if sub_col not in frame.columns:
+                    continue
+                sub_series = frame[sub_col].map(multiselect_selection)
+                selected_cnt = int(sub_series.sum())
+                unselected_cnt = int((~sub_series).sum())
+                pct = (
+                    (selected_cnt / len(sub_series) * 100)
+                    if len(sub_series) > 0
+                    else 0
                 )
-            ]
-            charts.append(
-                {
-                    "name": column,
-                    "description": "",
-                    "kind": "categories",
-                    "coded": True,
-                    "response_list": list_name,
-                    "variants": variants,
-                    "summary": (
-                        f"{len(values):,} responses · {len(frequencies):,} response "
-                        f"categories · response list: {list_name}"
-                    ),
-                }
-            )
-        elif pd.api.types.is_numeric_dtype(values):
-            numeric = pd.to_numeric(values, errors="coerce").dropna()
-            if numeric.empty:
-                continue
-            bin_count = min(8, max(1, numeric.nunique()))
-            counts, edges = pd.cut(numeric, bins=bin_count, retbins=True)
-            histogram = counts.value_counts(sort=False)
-            labels = [
-                f"{edges[index]:g}–{edges[index + 1]:g}"
-                for index in range(len(edges) - 1)
-            ]
-            charts.append(
-                {
-                    "name": column,
-                    "description": description,
-                    "kind": "numeric",
-                    "variants": [
-                        {
-                            "type": "histogram",
-                            "label": "Histogram",
-                            "labels": labels,
-                            "labels_en": labels,
-                            "labels_ny": labels,
-                            "values": [int(value) for value in histogram.tolist()],
-                        }
-                    ],
-                    "summary": (
-                        f"{len(numeric):,} values · Average {numeric.mean():,.2f} · "
-                        f"Median {numeric.median():,.2f}"
-                    ),
-                }
-            )
-        else:
-            raw_values = values.astype(str)
-            looks_like_date = raw_values.str.match(
-                r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}"
-            ).mean() >= 0.8
-            parsed_dates = (
-                pd.to_datetime(raw_values, errors="coerce", format="mixed", utc=True)
-                if looks_like_date
-                else pd.Series(dtype="datetime64[ns, UTC]")
-            )
-            if looks_like_date and parsed_dates.notna().sum() >= len(raw_values) * 0.8:
-                date_values = parsed_dates.dropna()
-                periods = date_values.dt.tz_localize(None).dt.to_period("M").astype(str)
-                frequencies = periods.value_counts().sort_index().tail(18)
                 charts.append(
                     {
-                        "name": column,
-                        "description": description,
-                        "kind": "date",
+                        "name": sub_col,
+                        "description": f"Choice: {en_label}",
+                        "kind": "categories",
+                        "coded": bool(list_name),
+                        "response_list": list_name,
+                        "is_grouped": False,
+                        "is_subcolumn": True,
+                        "is_base_column": False,
+                        "parent_group": question_name,
                         "variants": [
                             {
-                                "type": "line",
-                                "label": "Trend line",
-                                "labels": frequencies.index.tolist(),
-                                "labels_en": frequencies.index.tolist(),
-                                "labels_ny": frequencies.index.tolist(),
-                                "values": [int(value) for value in frequencies.tolist()],
+                                "type": "donut",
+                                "label": "Donut chart",
+                                "labels": [
+                                    f"Selected ({selected_cnt:,})",
+                                    f"Not selected ({unselected_cnt:,})",
+                                ],
+                                "labels_en": [
+                                    f"Selected ({selected_cnt:,})",
+                                    f"Not selected ({unselected_cnt:,})",
+                                ],
+                                "labels_ny": [
+                                    f"Zosankhidwa ({selected_cnt:,})",
+                                    f"Zosasankhidwa ({unselected_cnt:,})",
+                                ],
+                                "values": [selected_cnt, unselected_cnt],
                             }
                         ],
                         "summary": (
-                            f"{len(date_values):,} dated records · "
-                            f"latest {len(frequencies):,} months"
+                            f"{selected_cnt:,} of {len(sub_series):,} participants "
+                            f"selected ({pct:.1f}%) · {en_label}"
                         ),
                     }
                 )
-                continue
 
-            frequencies = raw_values.value_counts().head(10)
-            variants = [
-                categorical_chart_variant(
-                    frequencies.index.tolist(),
-                    frequencies.index.tolist(),
-                    frequencies.index.tolist(),
-                    frequencies.tolist(),
-                    category_count=raw_values.nunique(),
+            # Base column individual chart if present
+            if question_name in frame.columns:
+                base_chart = build_single_column_chart(
+                    question_name,
+                    frame,
+                    variable_lists,
+                    response_lists,
+                    coded_columns,
+                    description="Raw question column",
                 )
-            ]
-            charts.append(
-                {
-                    "name": column,
-                    "description": "",
-                    "kind": "categories",
-                    "coded": False,
-                    "variants": variants,
-                    "summary": (
-                        f"{values.nunique():,} unique values · "
-                        f"showing top {len(frequencies)}"
-                    ),
-                }
-            )
+                if base_chart:
+                    base_chart["is_grouped"] = False
+                    base_chart["is_subcolumn"] = False
+                    base_chart["is_base_column"] = True
+                    base_chart["parent_group"] = question_name
+                    charts.append(base_chart)
+            continue
+
+        column = question_columns[0]
+        chart = build_single_column_chart(
+            column, frame, variable_lists, response_lists, coded_columns
+        )
+        if chart:
+            chart["is_grouped"] = False
+            chart["is_subcolumn"] = False
+            chart["is_base_column"] = False
+            charts.append(chart)
 
     preview = [
         {key: (None if pd.isna(value) else value) for key, value in row.items()}
@@ -894,15 +1031,31 @@ def dashboard_data(dataset, codebook=None):
 def group_related_charts(charts):
     list_counts = {}
     for chart in charts:
+        if chart.get("is_subcolumn") or chart.get("is_base_column"):
+            continue
         list_name = chart.get("response_list")
         if list_name:
             list_counts[list_name] = list_counts.get(list_name, 0) + 1
 
     sections = []
     grouped_sections = {}
+    subcharts_by_parent = {}
     for index, chart in enumerate(charts):
+        parent = chart.get("parent_group")
+        if parent:
+            subcharts_by_parent.setdefault(parent, []).append(
+                {"chart": chart, "index": index}
+            )
+
+    for index, chart in enumerate(charts):
+        if chart.get("is_subcolumn") or chart.get("is_base_column"):
+            continue
         list_name = chart.get("response_list")
-        if list_name and list_counts[list_name] > 1:
+        child_entries = [{"chart": chart, "index": index}] + subcharts_by_parent.get(
+            chart["name"], []
+        )
+
+        if list_name and list_counts.get(list_name, 0) > 1:
             if list_name not in grouped_sections:
                 section = {
                     "title": f"Response list: {list_name}",
@@ -911,15 +1064,13 @@ def group_related_charts(charts):
                 }
                 grouped_sections[list_name] = section
                 sections.append(section)
-            grouped_sections[list_name]["charts"].append(
-                {"chart": chart, "index": index}
-            )
+            grouped_sections[list_name]["charts"].extend(child_entries)
         else:
             sections.append(
                 {
                     "title": chart["name"],
                     "related": False,
-                    "charts": [{"chart": chart, "index": index}],
+                    "charts": child_entries,
                 }
             )
     return sections
@@ -1140,7 +1291,7 @@ def upload():
         )
         return redirect(url_for("index"))
     flash("Your study file was cleaned and its dashboard is ready.", "success")
-    return redirect(url_for("dashboard", dataset_id=dataset.id))
+    return redirect(url_for("dashboard", dataset_id=dataset.id, new_upload="1"))
 
 
 @app.route("/studies/<int:dataset_id>")
@@ -1183,10 +1334,36 @@ def dashboard(dataset_id):
     pid_sequence_gap_count = sum(
         len(group["missing_ids"]) for group in pid_sequence_gaps
     )
+    question_groups = group_question_columns(dataset.column_names)
+    subcolumn_to_group = {}
+    grouped_categories = {}
+    for group_name, cols in question_groups.items():
+        if len(cols) > 1:
+            grouped_categories[group_name] = cols
+            for col in cols:
+                subcolumn_to_group[col] = group_name
+
     label_maps = {}
     if codebook_data:
         for column, list_name in codebook_data.get("variable_lists", {}).items():
             label_maps[column] = codebook_data.get("lists", {}).get(list_name, {})
+        for list_name, choices in codebook_data.get("lists", {}).items():
+            matching_col = next(
+                (c for c in dataset.column_names if c.casefold() == list_name.casefold()),
+                None,
+            )
+            if matching_col and matching_col not in label_maps:
+                label_maps[matching_col] = choices
+
+    grouped_chart_count = sum(
+        1
+        for chart in charts
+        if not chart.get("is_subcolumn") and not chart.get("is_base_column")
+    )
+    total_individual_charts = sum(
+        1 for chart in charts if not chart.get("is_grouped")
+    )
+
     return render_template(
         "dashboard.html",
         dataset=dataset,
@@ -1203,6 +1380,12 @@ def dashboard(dataset_id):
         pid_sequence_gap_count=pid_sequence_gap_count,
         preview=preview,
         label_maps=label_maps,
+        subcolumn_to_group=subcolumn_to_group,
+        grouped_categories=grouped_categories,
+        grouped_chart_count=grouped_chart_count,
+        total_individual_charts=total_individual_charts,
+        new_upload=request.args.get("new_upload") == "1",
+        saved_path=dataset.saved_path,
     )
 
 
@@ -1376,6 +1559,28 @@ def download_report(dataset_id):
         as_attachment=True,
         download_name=download_name,
     )
+
+
+@app.route("/studies/<int:dataset_id>/save-path", methods=["POST"])
+def save_dataset_path(dataset_id):
+    """Store the user's chosen local save path for quick reference on the home page."""
+    dataset = db.session.get(StudyDataset, dataset_id)
+    if dataset is None:
+        abort(404)
+    path = request.form.get("saved_path", "").strip()
+    # Accept an empty string to clear the path, any non-empty value as the note.
+    dataset.saved_path = path if path else None
+    try:
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        app.logger.exception("Could not save dataset path")
+        abort(500, "The file path could not be saved.")
+    if path:
+        flash(f"File path saved: {path}", "success")
+    else:
+        flash("File path cleared.", "success")
+    return redirect(url_for("dashboard", dataset_id=dataset.id))
 
 
 with app.app_context():

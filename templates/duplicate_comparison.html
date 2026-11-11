@@ -1,4 +1,14 @@
-<div class="duplicate-table-wrap">
+<div class="duplicate-table-wrap view-grouped">
+  <div class="table-view-controls">
+    <div class="table-view-toggle" role="group" aria-label="Duplicate comparison field grouping">
+      <button type="button" class="button table-mode-btn active" data-table-mode="grouped" aria-pressed="true">
+        ⊞ Grouped fields (Default)
+      </button>
+      <button type="button" class="button table-mode-btn" data-table-mode="all" aria-pressed="false">
+        ☰ Show all fields ({{ dataset.column_names|length }})
+      </button>
+    </div>
+  </div>
   <table class="duplicate-comparison">
     <thead>
       <tr>
@@ -10,8 +20,9 @@
     </thead>
     <tbody>
       {% for column in dataset.column_names %}
-        <tr>
-          <th>{{ column }}</th>
+        {% set is_sub = column in subcolumn_to_group %}
+        <tr class="{% if is_sub %}row-subcolumn{% else %}row-standalone{% endif %}">
+          <th>{{ column }}{% if column in grouped_categories %} <span class="col-group-indicator">Grouped</span>{% endif %}</th>
           {% for row in group.rows %}
             <td{% if column in group.different_columns %} class="duplicate-different-cell"{% endif %}>
               <form class="duplicate-cell-form" method="post" action="{{ url_for('edit_duplicate_row', dataset_id=dataset.id) }}">

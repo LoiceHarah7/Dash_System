@@ -4,9 +4,33 @@
   {% macro render_chart(entry) %}
     {% set chart = entry.chart %}
     {% set chart_index = entry.index %}
-    <article class="chart-card" data-chart-name="{{ chart.name }}">
+    <article class="chart-card {% if chart.is_grouped %}chart-card-grouped{% elif chart.is_subcolumn %}chart-card-subcolumn{% elif chart.is_base_column %}chart-card-base{% else %}chart-card-standalone{% endif %}"
+      data-chart-name="{{ chart.name }}"
+      data-is-grouped="{{ 'true' if chart.is_grouped else 'false' }}"
+      data-is-subcolumn="{{ 'true' if chart.is_subcolumn else 'false' }}"
+      data-is-base="{{ 'true' if chart.is_base_column else 'false' }}"
+      {% if chart.parent_group %}data-parent-group="{{ chart.parent_group }}"{% endif %}
+      {% if chart.is_subcolumn or chart.is_base_column %}hidden{% endif %}>
       <div class="chart-title">
-        <div><h3>{{ chart.name }}</h3>{% if chart.description %}<p class="chart-description">{{ chart.description }}</p>{% endif %}<p>{{ chart.summary }}</p></div>
+        <div>
+          <div class="chart-title-header">
+            <h3>{{ chart.name }}</h3>
+            {% if chart.is_grouped %}
+              <span class="chart-badge grouped-badge">Grouped category ({{ chart.group_columns|length }} choices)</span>
+            {% elif chart.is_subcolumn %}
+              <span class="chart-badge subcolumn-badge">Sub-column of {{ chart.parent_group }}</span>
+            {% elif chart.is_base_column %}
+              <span class="chart-badge base-badge">Base column</span>
+            {% endif %}
+          </div>
+          {% if chart.description %}<p class="chart-description">{{ chart.description }}</p>{% endif %}
+          <p>{{ chart.summary }}</p>
+          {% if chart.is_grouped and chart.group_columns %}
+            <button type="button" class="button subcolumn-toggle-btn" data-toggle-subcolumns="{{ chart.name }}" aria-expanded="false" title="Expand or collapse individual sub-columns">
+              <span>View individual columns ({{ chart.group_columns|length }})</span>
+            </button>
+          {% endif %}
+        </div>
         {% if codebook %}
           {% set current_list = codebook.variables.variable_lists.get(chart.name, chart.response_list or "") %}
           <details class="chart-mapping">
@@ -48,9 +72,41 @@
   {% endmacro %}
   <a class="back-link" href="{{ url_for('index') }}">← All studies</a>
   <section class="dashboard-heading">
-    <div><p class="eyebrow">STUDY DASHBOARD</p><h1>{{ dataset.study_name }}</h1><p class="intro">{{ dataset.filename }} · Uploaded {{ dataset.uploaded_at.strftime('%b %d, %Y at %H:%M') }}{% if codebook %} · Codebook: {{ codebook.filename }}{% endif %}</p></div>
+    <div><p class="eyebrow">STUDY DASHBOARD</p><h1>{{ dataset.study_name }}</h1><p class="intro">{{ dataset.filename }} · Uploaded {{ dataset.uploaded_at.strftime('%b %d, %Y at %H:%M') }}{% if codebook %} · Codebook: {{ codebook.filename }}{% endif %}{% if saved_path %} · <span class="saved-path-chip" title="{{ saved_path }}">📂 {{ saved_path | truncate(50, True, '…') }}</span>{% endif %}</p></div>
     <a class="button report-button" href="{{ url_for('download_report', dataset_id=dataset.id) }}"><span>↓</span> Download cleaning report &amp; data</a>
   </section>
+
+  {# ── Save-a-copy banner ─────────────────────────────────────────── #}
+  {% if new_upload or not saved_path %}
+  <section class="save-copy-banner {% if saved_path %}save-copy-banner--done{% endif %}" id="save-copy-banner" aria-label="Save a copy of this dataset">
+    <div class="save-copy-info">
+      <span class="save-copy-icon">📂</span>
+      <div>
+        {% if new_upload and not saved_path %}
+          <strong>Save a copy so you can find it later</strong>
+          <p>Download the cleaned dataset to your computer, then paste the file path below. This lets you quickly locate it and keeps your dashboard permanently accessible from the home page.</p>
+        {% elif saved_path %}
+          <strong>File path recorded</strong>
+          <p>Your dataset is saved at <code>{{ saved_path }}</code>. Update the path any time below.</p>
+        {% else %}
+          <strong>No local file path recorded yet</strong>
+          <p>Paste the path to where you've saved this dataset file so you can find it quickly from the home page.</p>
+        {% endif %}
+        <div class="save-copy-actions">
+          <a class="button save-copy-download-btn" href="{{ url_for('download_report', dataset_id=dataset.id) }}">↓ Download cleaned data</a>
+          <form class="save-copy-form" method="post" action="{{ url_for('save_dataset_path', dataset_id=dataset.id) }}">
+            <input class="save-copy-input" type="text" name="saved_path" placeholder="e.g. C:\Users\you\Documents\ESD-cleaned.xlsx" value="{{ saved_path or '' }}" maxlength="500" aria-label="Local file path">
+            <button class="button save-copy-submit" type="submit">Save path</button>
+            {% if saved_path %}
+              <button class="button save-copy-clear" type="submit" name="saved_path" value="">Clear path</button>
+            {% endif %}
+          </form>
+        </div>
+      </div>
+    </div>
+    <button class="save-copy-dismiss" id="save-copy-dismiss" type="button" aria-label="Dismiss" title="Dismiss this banner">✕</button>
+  </section>
+  {% endif %}
 
   <section class="metrics">
     <article class="metric-card"><span class="metric-icon violet">▤</span><span class="metric-label">Records</span><strong>{{ "{:,}".format(dataset.rows) }}</strong><small>after cleaning</small></article>
@@ -94,9 +150,19 @@
       <span class="muted">{% if pid_candidates %}Missing across all detected PID fields: {{ pid_candidates|join(", ") }}{% else %}No PID-like fields detected{% endif %}</span>
     </div>
     {% if missing_pid_rows %}
-      <div class="table-wrap"><table><thead><tr><th>Row</th>{% for column in dataset.column_names %}<th>{{ column }}</th>{% endfor %}</tr></thead><tbody>
+      <div class="table-view-controls">
+        <div class="table-view-toggle" role="group" aria-label="Missing PID rows column grouping">
+          <button type="button" class="button table-mode-btn active" data-table-mode="grouped" aria-pressed="true">
+            ⊞ Grouped columns (Default)
+          </button>
+          <button type="button" class="button table-mode-btn" data-table-mode="all" aria-pressed="false">
+            ☰ Show all columns ({{ dataset.column_names|length }})
+          </button>
+        </div>
+      </div>
+      <div class="table-wrap view-grouped"><table><thead><tr><th>Row</th>{% for column in dataset.column_names %}{% set is_sub = column in subcolumn_to_group %}<th class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}" data-column="{{ column }}">{{ column }}{% if column in grouped_categories %} <span class="col-group-indicator">Grouped</span>{% endif %}</th>{% endfor %}</tr></thead><tbody>
         {% for entry in missing_pid_rows %}
-          <tr><td>{{ entry.index + 1 }}</td>{% for column in dataset.column_names %}<td>{{ entry.record.get(column) if entry.record.get(column) is not none else "—" }}</td>{% endfor %}</tr>
+          <tr><td>{{ entry.index + 1 }}</td>{% for column in dataset.column_names %}{% set is_sub = column in subcolumn_to_group %}<td class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}"{% if column in label_maps %} data-label-column="{{ column }}" data-raw-value="{{ entry.record.get(column) }}"{% endif %}>{{ entry.record.get(column) if entry.record.get(column) is not none else "—" }}</td>{% endfor %}</tr>
         {% endfor %}
       </tbody></table></div>
     {% else %}
@@ -110,9 +176,19 @@
         <div><p class="eyebrow">PID VERIFICATION</p><h2>All PID rows</h2></div>
         <span class="muted">{{ all_pid_rows|length }} records · sorted by PID number</span>
       </div>
-      <div class="table-wrap"><table><thead><tr><th>Row</th>{% for column in dataset.column_names %}<th>{{ column }}</th>{% endfor %}</tr></thead><tbody>
+      <div class="table-view-controls">
+        <div class="table-view-toggle" role="group" aria-label="All PID rows column grouping">
+          <button type="button" class="button table-mode-btn active" data-table-mode="grouped" aria-pressed="true">
+            ⊞ Grouped columns (Default)
+          </button>
+          <button type="button" class="button table-mode-btn" data-table-mode="all" aria-pressed="false">
+            ☰ Show all columns ({{ dataset.column_names|length }})
+          </button>
+        </div>
+      </div>
+      <div class="table-wrap view-grouped"><table><thead><tr><th>Row</th>{% for column in dataset.column_names %}{% set is_sub = column in subcolumn_to_group %}<th class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}" data-column="{{ column }}">{{ column }}{% if column in grouped_categories %} <span class="col-group-indicator">Grouped</span>{% endif %}</th>{% endfor %}</tr></thead><tbody>
         {% for entry in all_pid_rows %}
-          <tr><td>{{ entry.index + 1 }}</td>{% for column in dataset.column_names %}<td>{{ entry.record.get(column) if entry.record.get(column) is not none else "—" }}</td>{% endfor %}</tr>
+          <tr><td>{{ entry.index + 1 }}</td>{% for column in dataset.column_names %}{% set is_sub = column in subcolumn_to_group %}<td class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}"{% if column in label_maps %} data-label-column="{{ column }}" data-raw-value="{{ entry.record.get(column) }}"{% endif %}>{{ entry.record.get(column) if entry.record.get(column) is not none else "—" }}</td>{% endfor %}</tr>
         {% endfor %}
       </tbody></table></div>
     </section>
@@ -183,8 +259,22 @@
   </section>
 
   <section class="charts-section">
-    <div class="section-heading"><div><p class="eyebrow">AUTOMATIC ANALYSIS</p><h2>Explore your data</h2></div><span class="muted">{{ charts|length }} variables · one recommended chart per field</span></div>
+    <div class="section-heading"><div><p class="eyebrow">AUTOMATIC ANALYSIS</p><h2>Explore your data</h2></div><span class="muted" id="charts-header-count">{{ grouped_chart_count }} categories · one recommended chart per question</span></div>
     {% if charts %}
+      <div class="chart-view-mode-bar">
+        <div class="view-mode-selector" role="radiogroup" aria-label="Chart grouping mode">
+          <button type="button" class="button view-mode-btn active" data-chart-mode="grouped" aria-checked="true">
+            <span class="mode-icon">⊞</span> Grouped view (Default)
+          </button>
+          <button type="button" class="button view-mode-btn" data-chart-mode="all" aria-checked="false">
+            <span class="mode-icon">☰</span> Show all columns ({{ total_individual_charts }})
+          </button>
+        </div>
+        <span class="muted view-mode-hint" id="view-mode-hint">
+          Similar category sub-columns are grouped by default. Click "Show all columns" to see every individual variable.
+        </span>
+      </div>
+
       <div class="chart-search">
         <label for="chart-search-input">Find a question or field</label>
         <input id="chart-search-input" type="search" placeholder="Search graphs by name…" autocomplete="off">
@@ -192,7 +282,7 @@
         <select id="chart-field-select" aria-label="Choose a field to view">
           <option value="">All fields</option>
         </select>
-        <span id="chart-search-results" class="muted" aria-live="polite">{{ charts|length }} graphs</span>
+        <span id="chart-search-results" class="muted" aria-live="polite">{{ grouped_chart_count }} graphs</span>
       </div>
     {% endif %}
     {% if codebook %}
@@ -265,10 +355,35 @@
 
   <section class="preview-section">
     <div class="section-heading"><div><p class="eyebrow">CLEANED DATA</p><h2>Data preview</h2></div><span class="muted">First {{ preview|length }} records · all rows in downloaded report</span></div>
-    <div class="table-wrap"><table><thead><tr>{% for column in dataset.column_names %}<th>{{ column }}</th>{% endfor %}</tr></thead><tbody>
-      {% for row in preview %}<tr>{% for column in dataset.column_names %}<td{% if column in label_maps %} data-label-column="{{ column }}" data-raw-value="{{ row[column] }}"{% endif %}>{{ row[column] if row[column] is not none else "—" }}</td>{% endfor %}</tr>{% endfor %}
+    <div class="table-view-controls">
+      <div class="table-view-toggle" role="group" aria-label="Data preview column grouping">
+        <button type="button" class="button table-mode-btn active" data-table-mode="grouped" aria-pressed="true">
+          ⊞ Grouped columns (Default)
+        </button>
+        <button type="button" class="button table-mode-btn" data-table-mode="all" aria-pressed="false">
+          ☰ Show all columns ({{ dataset.column_names|length }})
+        </button>
+      </div>
+      <span class="muted table-mode-caption">Sub-columns are consolidated into category groups. Switch to "Show all columns" to view raw individual variables.</span>
+    </div>
+    <div class="table-wrap view-grouped"><table><thead><tr><th>Row</th>{% for column in dataset.column_names %}{% set is_sub = column in subcolumn_to_group %}<th class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}" data-column="{{ column }}">{{ column }}{% if column in grouped_categories %} <span class="col-group-indicator">Grouped</span>{% endif %}</th>{% endfor %}</tr></thead><tbody>
+      {% for row in preview %}<tr><td>{{ loop.index }}</td>{% for column in dataset.column_names %}{% set is_sub = column in subcolumn_to_group %}<td class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}"{% if column in label_maps %} data-label-column="{{ column }}" data-raw-value="{{ row[column] }}"{% endif %}>{{ row[column] if row[column] is not none else "—" }}</td>{% endfor %}</tr>{% endfor %}
     </tbody></table></div>
   </section>
 
   <script src="{{ url_for('static', filename='dashboard.js') }}" defer></script>
+  <script>
+    // Dismiss the save-a-copy banner for this page session only
+    (function () {
+      const btn = document.getElementById('save-copy-dismiss');
+      const banner = document.getElementById('save-copy-banner');
+      if (btn && banner) {
+        btn.addEventListener('click', function () {
+          banner.style.transition = 'opacity 0.25s';
+          banner.style.opacity = '0';
+          setTimeout(function () { banner.hidden = true; }, 260);
+        });
+      }
+    })();
+  </script>
 {% endblock %}

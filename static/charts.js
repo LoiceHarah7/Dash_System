@@ -4,8 +4,12 @@ const codebookLabels = JSON.parse(
 );
 const chartColors = ["#7057df", "#4b91d2", "#35a778", "#e5a43b", "#e16e78", "#42aab0", "#9470c9", "#81934b", "#df8650", "#7181aa"];
 const svgNamespace = "http://www.w3.org/2000/svg";
+const CHART_WIDTH = 800;
+const ROW_HEIGHT = 38;
 let chartLanguage = "en";
 const categoryFilters = new Map();
+
+/* ---------- helpers ---------- */
 
 function element(name, attributes = {}, text = null) {
   const node = document.createElementNS(svgNamespace, name);
@@ -16,10 +20,15 @@ function element(name, attributes = {}, text = null) {
   return node;
 }
 
-function chartSvg(host, label) {
+function shorten(text, max) {
+  text = String(text);
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function chartSvg(host, label, height) {
   host.replaceChildren();
   const svg = element("svg", {
-    viewBox: "0 0 640 300",
+    viewBox: `0 0 ${CHART_WIDTH} ${height}`,
     role: "img",
     "aria-label": label,
     preserveAspectRatio: "xMidYMid meet",
@@ -29,63 +38,79 @@ function chartSvg(host, label) {
   return svg;
 }
 
+/* ---------- drawing ---------- */
+
 function drawGrid(svg, maximum, left, top, width, height) {
-  const ticks = 4;
+  const ticks = 5;
   for (let index = 0; index <= ticks; index += 1) {
-    const value = maximum * (ticks - index) / ticks;
+    const value = (maximum * (ticks - index)) / ticks;
     const y = top + (height * index) / ticks;
     svg.append(
       element("line", { x1: left, y1: y, x2: left + width, y2: y, class: "chart-gridline" }),
-      element("text", { x: left - 9, y: y + 4, "text-anchor": "end", class: "chart-tick" }, Math.round(value).toLocaleString()),
+      element("text", { x: left - 12, y: y + 5, "text-anchor": "end", class: "chart-tick" }, Math.round(value).toLocaleString()),
     );
   }
 }
 
+function drawAxisLabel(svg, x, y, text, rotate, maxChars) {
+  const attrs = { x, y, class: "chart-tick", "text-anchor": rotate ? "end" : "middle" };
+  if (rotate) attrs.transform = `rotate(-35 ${x} ${y})`;
+  const node = element("text", attrs, shorten(text, maxChars));
+  node.append(element("title", {}, text)); // full label on hover
+  svg.append(node);
+}
+
 function drawVerticalBars(svg, labels, values) {
-  const left = 58;
-  const top = 20;
-  const width = 560;
-  const height = 218;
+  const left = 66;
+  const top = 26;
+  const width = 710;
+  const height = 255;
   const maximum = Math.max(...values, 1);
   drawGrid(svg, maximum, left, top, width, height);
   const slot = width / Math.max(labels.length, 1);
+  const rotate = slot < 80;
+  const maxChars = rotate ? 18 : Math.max(6, Math.floor(slot / 8));
   values.forEach((value, index) => {
     const barHeight = (value / maximum) * (height - 4);
-    const barWidth = Math.min(38, slot * 0.64);
+    const barWidth = Math.min(60, slot * 0.66);
     const x = left + index * slot + (slot - barWidth) / 2;
     const y = top + height - barHeight;
     svg.append(
-      element("rect", { x, y, width: barWidth, height: barHeight, rx: 5, class: "chart-bar", fill: chartColors[index % chartColors.length] }),
-      element("text", { x: x + barWidth / 2, y: Math.max(y - 6, top + 9), "text-anchor": "middle", class: "chart-value" }, value.toLocaleString()),
-      element("text", { x: x + barWidth / 2, y: top + height + 19, "text-anchor": "middle", class: "chart-tick" }, labels[index].length > 12 ? `${labels[index].slice(0, 11)}…` : labels[index]),
+      element("rect", { x, y, width: barWidth, height: barHeight, rx: 6, class: "chart-bar", fill: chartColors[index % chartColors.length] }),
     );
+    if (slot >= 30) {
+      svg.append(element("text", { x: x + barWidth / 2, y: Math.max(y - 8, top + 10), "text-anchor": "middle", class: "chart-value" }, value.toLocaleString()));
+    }
+    drawAxisLabel(svg, x + barWidth / 2, top + height + 24, labels[index], rotate, maxChars);
   });
 }
 
 function drawHorizontalBars(svg, labels, values) {
-  const left = 142;
+  const left = 230;
   const top = 14;
   const width = 470;
-  const rowHeight = Math.min(27, 218 / Math.max(labels.length, 1));
   const maximum = Math.max(...values, 1);
   values.forEach((value, index) => {
-    const y = top + index * rowHeight;
+    const y = top + index * ROW_HEIGHT;
     const barWidth = (value / maximum) * width;
-    const label = labels[index].length > 23 ? `${labels[index].slice(0, 22)}…` : labels[index];
+    const barHeight = ROW_HEIGHT * 0.58;
+    const barY = y + (ROW_HEIGHT - barHeight) / 2;
+    const label = element("text", { x: left - 14, y: y + ROW_HEIGHT * 0.64, "text-anchor": "end", class: "chart-tick" }, shorten(labels[index], 30));
+    label.append(element("title", {}, labels[index]));
     svg.append(
-      element("text", { x: left - 11, y: y + rowHeight * 0.67, "text-anchor": "end", class: "chart-tick" }, label),
-      element("rect", { x: left, y: y + rowHeight * 0.2, width, height: Math.max(rowHeight * 0.52, 7), rx: 4, class: "chart-bar-track" }),
-      element("rect", { x: left, y: y + rowHeight * 0.2, width: barWidth, height: Math.max(rowHeight * 0.52, 7), rx: 4, fill: chartColors[index % chartColors.length] }),
-      element("text", { x: Math.min(left + barWidth + 8, 625), y: y + rowHeight * 0.67, class: "chart-value" }, value.toLocaleString()),
+      label,
+      element("rect", { x: left, y: barY, width, height: barHeight, rx: 5, class: "chart-bar-track" }),
+      element("rect", { x: left, y: barY, width: Math.max(barWidth, 3), height: barHeight, rx: 5, fill: chartColors[index % chartColors.length] }),
+      element("text", { x: Math.min(left + barWidth + 10, CHART_WIDTH - 50), y: y + ROW_HEIGHT * 0.64, class: "chart-value" }, value.toLocaleString()),
     );
   });
 }
 
 function drawLine(svg, labels, values) {
-  const left = 58;
-  const top = 20;
-  const width = 560;
-  const height = 218;
+  const left = 66;
+  const top = 26;
+  const width = 700;
+  const height = 255;
   const maximum = Math.max(...values, 1);
   drawGrid(svg, maximum, left, top, width, height);
   const points = values.map((value, index) => ({
@@ -95,18 +120,18 @@ function drawLine(svg, labels, values) {
   const path = points.map((point, index) => `${index ? "L" : "M"} ${point.x} ${point.y}`).join(" ");
   svg.append(element("path", { d: path, class: "chart-line" }));
   points.forEach((point, index) => {
-    svg.append(element("circle", { cx: point.x, cy: point.y, r: 3.5, class: "chart-point" }));
+    svg.append(element("circle", { cx: point.x, cy: point.y, r: 5, class: "chart-point" }));
     if (index === 0 || index === points.length - 1 || index % Math.ceil(points.length / 6) === 0) {
-      svg.append(element("text", { x: point.x, y: top + height + 19, "text-anchor": "middle", class: "chart-tick" }, labels[index]));
+      svg.append(element("text", { x: point.x, y: top + height + 26, "text-anchor": "middle", class: "chart-tick" }, labels[index]));
     }
   });
 }
 
 function drawBoxPlot(svg, summary) {
   const [minimum, firstQuartile, median, thirdQuartile, maximum] = summary;
-  const left = 55;
-  const right = 610;
-  const y = 137;
+  const left = 60;
+  const right = 740;
+  const y = 145;
   const span = maximum - minimum || 1;
   const position = (value) => left + ((value - minimum) / span) * (right - left);
   const first = position(firstQuartile);
@@ -114,25 +139,42 @@ function drawBoxPlot(svg, summary) {
   const middle = position(median);
   svg.append(
     element("line", { x1: left, y1: y, x2: right, y2: y, class: "box-whisker" }),
-    element("line", { x1: left, y1: y - 18, x2: left, y2: y + 18, class: "box-cap" }),
-    element("line", { x1: right, y1: y - 18, x2: right, y2: y + 18, class: "box-cap" }),
-    element("rect", { x: first, y: y - 34, width: Math.max(third - first, 2), height: 68, rx: 6, class: "box-range" }),
-    element("line", { x1: middle, y1: y - 34, x2: middle, y2: y + 34, class: "box-median" }),
+    element("line", { x1: left, y1: y - 22, x2: left, y2: y + 22, class: "box-cap" }),
+    element("line", { x1: right, y1: y - 22, x2: right, y2: y + 22, class: "box-cap" }),
+    element("rect", { x: first, y: y - 42, width: Math.max(third - first, 3), height: 84, rx: 8, class: "box-range" }),
+    element("line", { x1: middle, y1: y - 42, x2: middle, y2: y + 42, class: "box-median" }),
   );
   [minimum, firstQuartile, median, thirdQuartile, maximum].forEach((value, index) => {
     const x = position(value);
     svg.append(
-      element("line", { x1: x, y1: y + 39, x2: x, y2: y + 46, class: "box-cap" }),
-      element("text", { x, y: y + 63, "text-anchor": index === 0 ? "start" : index === 4 ? "end" : "middle", class: "chart-tick" }, Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })),
+      element("line", { x1: x, y1: y + 48, x2: x, y2: y + 57, class: "box-cap" }),
+      element("text", { x, y: y + 80, "text-anchor": index === 0 ? "start" : index === 4 ? "end" : "middle", class: "chart-value" }, Number(value).toLocaleString(undefined, { maximumFractionDigits: 2 })),
     );
   });
-  svg.append(element("text", { x: 320, y: 52, "text-anchor": "middle", class: "box-explanation" }, "Middle box = middle half of values · line = median · whiskers = min and max"));
+  svg.append(
+    element("text", { x: CHART_WIDTH / 2, y: 32, "text-anchor": "middle", class: "box-explanation" }, "The box holds the middle half of the values. The thick line is the median."),
+    element("text", { x: CHART_WIDTH / 2, y: 54, "text-anchor": "middle", class: "box-explanation" }, "The thin lines (whiskers) reach the smallest and largest values."),
+  );
 }
 
-function drawDonut(svg, labels, values) {
-  const centerX = 175;
-  const centerY = 140;
-  const radius = 84;
+function drawLegend(svg, labels, values, x, height) {
+  const rowGap = 32;
+  const startY = (height - labels.length * rowGap) / 2 + 22;
+  labels.forEach((label, index) => {
+    const y = startY + index * rowGap;
+    const text = element("text", { x: x + 20, y, class: "chart-tick legend-text" }, `${shorten(label, 30)} · ${values[index].toLocaleString()}`);
+    text.append(element("title", {}, label));
+    svg.append(
+      element("circle", { cx: x, cy: y - 5, r: 7, fill: chartColors[index % chartColors.length] }),
+      text,
+    );
+  });
+}
+
+function drawDonut(svg, labels, values, height) {
+  const centerX = 190;
+  const centerY = height / 2;
+  const radius = 105;
   const circumference = 2 * Math.PI * radius;
   const total = values.reduce((sum, value) => sum + value, 0) || 1;
   let offset = 0;
@@ -144,7 +186,7 @@ function drawDonut(svg, labels, values) {
       r: radius,
       fill: "none",
       stroke: chartColors[index % chartColors.length],
-      "stroke-width": 34,
+      "stroke-width": 44,
       "stroke-dasharray": `${segment} ${circumference - segment}`,
       "stroke-dashoffset": -offset,
       transform: `rotate(-90 ${centerX} ${centerY})`,
@@ -152,30 +194,19 @@ function drawDonut(svg, labels, values) {
     offset += segment;
   });
   svg.append(
-    element("text", { x: centerX, y: centerY - 2, "text-anchor": "middle", class: "donut-total" }, total.toLocaleString()),
-    element("text", { x: centerX, y: centerY + 18, "text-anchor": "middle", class: "chart-tick" }, "records"),
+    element("text", { x: centerX, y: centerY + 2, "text-anchor": "middle", class: "donut-total" }, total.toLocaleString()),
+    element("text", { x: centerX, y: centerY + 26, "text-anchor": "middle", class: "chart-tick" }, "records"),
   );
-  labels.forEach((label, index) => {
-    const y = 54 + index * 25;
-    svg.append(
-      element("circle", { cx: 330, cy: y - 4, r: 5, fill: chartColors[index % chartColors.length] }),
-      element("text", { x: 343, y, class: "chart-tick" }, `${label.length > 20 ? `${label.slice(0, 19)}…` : label} · ${values[index].toLocaleString()}`),
-    );
-  });
+  drawLegend(svg, labels, values, 390, height);
 }
 
-function drawPie(svg, labels, values) {
-  const centerX = 190;
-  const centerY = 140;
-  const radius = 94;
+function drawPie(svg, labels, values, height) {
+  const centerX = 200;
+  const centerY = height / 2;
+  const radius = 125;
   const total = values.reduce((sum, value) => sum + value, 0) || 1;
   if (values.length === 1) {
-    svg.append(element("circle", {
-      cx: centerX,
-      cy: centerY,
-      r: radius,
-      fill: chartColors[0],
-    }));
+    svg.append(element("circle", { cx: centerX, cy: centerY, r: radius, fill: chartColors[0] }));
   }
   let angle = -Math.PI / 2;
   values.forEach((value, index) => {
@@ -200,14 +231,10 @@ function drawPie(svg, labels, values) {
     }));
     angle = nextAngle;
   });
-  labels.forEach((label, index) => {
-    const y = 54 + index * 25;
-    svg.append(
-      element("circle", { cx: 350, cy: y - 4, r: 5, fill: chartColors[index % chartColors.length] }),
-      element("text", { x: 363, y, class: "chart-tick" }, `${label.length > 19 ? `${label.slice(0, 18)}…` : label} · ${values[index].toLocaleString()}`),
-    );
-  });
+  drawLegend(svg, labels, values, 410, height);
 }
+
+/* ---------- labels and filters ---------- */
 
 function localizedLabels(variant) {
   const languageKey = chartLanguage === "ny" ? "labels_ny" : "labels_en";
@@ -225,6 +252,8 @@ function filteredVariant(variant, filterIndex) {
   return result;
 }
 
+/* ---------- rendering ---------- */
+
 function renderChart(chartIndex, variantIndex) {
   const chart = chartData[chartIndex];
   const filterIndex = categoryFilters.get(chartIndex);
@@ -233,21 +262,33 @@ function renderChart(chartIndex, variantIndex) {
   const host = document.querySelector(
     `[data-chart-host="${chartIndex}-${variantIndex}"]`,
   );
-  const svg = chartSvg(host, `${chart.name}, ${variant.label}`);
+  if (!host) return;
 
-  if (
+  const count = variant.labels.length;
+  const isVertical =
     variant.type === "histogram" ||
-    (variant.type === "bar" && chart.kind === "date")
-  ) {
+    (variant.type === "bar" && chart.kind === "date");
+  const isRound = variant.type === "pie" || variant.type === "donut";
+  const isHorizontal =
+    !isVertical && !isRound && variant.type !== "line" && variant.type !== "box";
+
+  let height = 360;
+  if (variant.type === "box") height = 280;
+  else if (isRound) height = Math.max(320, count * 32 + 70);
+  else if (isHorizontal) height = Math.max(200, count * ROW_HEIGHT + 28);
+
+  const svg = chartSvg(host, `${chart.name}, ${variant.label}`, height);
+
+  if (isVertical) {
     drawVerticalBars(svg, variant.labels, variant.values);
   } else if (variant.type === "line") {
     drawLine(svg, variant.labels, variant.values);
   } else if (variant.type === "box") {
     drawBoxPlot(svg, variant.summary);
   } else if (variant.type === "pie") {
-    drawPie(svg, variant.labels, variant.values);
+    drawPie(svg, variant.labels, variant.values, height);
   } else if (variant.type === "donut") {
-    drawDonut(svg, variant.labels, variant.values);
+    drawDonut(svg, variant.labels, variant.values, height);
   } else {
     drawHorizontalBars(svg, variant.labels, variant.values);
   }
@@ -290,6 +331,11 @@ function renderFrequencyTable(chartIndex) {
   host.replaceChildren(table);
 }
 
+function normalizeCodeForBrowser(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? String(number) : String(value);
+}
+
 function renderLanguage() {
   chartData.forEach((chart, chartIndex) => {
     chart.variants.forEach((variant, variantIndex) => {
@@ -298,11 +344,25 @@ function renderLanguage() {
     renderFrequencyTable(chartIndex);
   });
   document.querySelectorAll("[data-label-column]").forEach((cell) => {
-    const code = String(cell.dataset.rawValue);
+    const raw = String(cell.dataset.rawValue ?? "").trim();
+    if (!raw) return;
     const labelsByCode = codebookLabels[cell.dataset.labelColumn] || {};
-    const labels = labelsByCode[code] || labelsByCode[normalizeCodeForBrowser(code)];
-    cell.textContent =
-      labels?.[chartLanguage] || labels?.en || labels?.ny || code;
+    if (/\s+|,/.test(raw)) {
+      const parts = raw
+        .split(/[\s,]+/)
+        .filter(Boolean)
+        .map((code) => {
+          const labels =
+            labelsByCode[code] || labelsByCode[normalizeCodeForBrowser(code)];
+          return labels?.[chartLanguage] || labels?.en || labels?.ny || code;
+        });
+      cell.textContent = parts.join(", ");
+    } else {
+      const labels =
+        labelsByCode[raw] || labelsByCode[normalizeCodeForBrowser(raw)];
+      cell.textContent =
+        labels?.[chartLanguage] || labels?.en || labels?.ny || raw;
+    }
   });
   document.querySelectorAll("[data-category-filter]").forEach((select) => {
     const chartIndex = Number(select.dataset.categoryFilter);
@@ -323,32 +383,77 @@ function renderLanguage() {
   });
 }
 
-function normalizeCodeForBrowser(value) {
-  const number = Number(value);
-  return Number.isFinite(number) ? String(number) : String(value);
-}
+/* ---------- view mode, search and field picker ---------- */
 
+let chartViewMode = "grouped";
 const chartSearch = document.getElementById("chart-search-input");
 const chartFieldSelect = document.getElementById("chart-field-select");
 const chartSearchResults = document.getElementById("chart-search-results");
 const relatedGroupOpenStates = new Map();
 
 const chartCards = [...document.querySelectorAll(".chart-card[data-chart-name]")];
-if (chartFieldSelect) {
-  chartCards.forEach((card) => {
+
+function updateFieldSelectOptions() {
+  if (!chartFieldSelect) return;
+  const previousValue = chartFieldSelect.value;
+  chartFieldSelect.replaceChildren();
+  const allOption = document.createElement("option");
+  allOption.value = "";
+  allOption.textContent =
+    chartViewMode === "grouped" ? "All questions / categories" : "All fields";
+  chartFieldSelect.append(allOption);
+
+  const eligibleCards = chartCards.filter((card) => {
+    if (chartViewMode === "grouped") {
+      return card.dataset.isSubcolumn !== "true" && card.dataset.isBase !== "true";
+    }
+    return card.dataset.isGrouped !== "true";
+  });
+
+  eligibleCards.forEach((card) => {
     const option = document.createElement("option");
     option.value = card.dataset.chartName;
     option.textContent = card.dataset.chartName;
     chartFieldSelect.append(option);
   });
+
+  if ([...chartFieldSelect.options].some((opt) => opt.value === previousValue)) {
+    chartFieldSelect.value = previousValue;
+  } else {
+    chartFieldSelect.value = "";
+  }
+}
+
+function applyViewMode() {
+  chartCards.forEach((card) => {
+    const isSub = card.dataset.isSubcolumn === "true";
+    const isBase = card.dataset.isBase === "true";
+    const isGrouped = card.dataset.isGrouped === "true";
+
+    if (chartViewMode === "grouped") {
+      card.hidden = isSub || isBase;
+    } else {
+      card.hidden = isGrouped;
+    }
+  });
+
+  chartData.forEach((chart, chartIndex) => {
+    chart.variants.forEach((variant, variantIndex) => {
+      renderChart(chartIndex, variantIndex);
+    });
+    renderFrequencyTable(chartIndex);
+  });
+
+  updateFieldSelectOptions();
+  filterCharts();
 }
 
 function filterCharts() {
   const query = chartSearch?.value.trim().toLocaleLowerCase() || "";
   const selectedField = chartFieldSelect?.value || "";
-  const cards = [...document.querySelectorAll(".chart-card[data-chart-name]")];
   const relatedGroups = [...document.querySelectorAll(".related-chart-group")];
   let visibleCount = 0;
+  let totalEligible = 0;
   const hasFilter = Boolean(query || selectedField);
 
   if (hasFilter && relatedGroupOpenStates.size === 0) {
@@ -357,7 +462,24 @@ function filterCharts() {
     });
   }
 
-  cards.forEach((card) => {
+  chartCards.forEach((card) => {
+    const isSub = card.dataset.isSubcolumn === "true";
+    const isBase = card.dataset.isBase === "true";
+    const isGrouped = card.dataset.isGrouped === "true";
+
+    let isEligible = true;
+    if (chartViewMode === "grouped") {
+      isEligible = !isSub && !isBase;
+    } else {
+      isEligible = !isGrouped;
+    }
+
+    if (!isEligible) {
+      card.hidden = true;
+      return;
+    }
+
+    totalEligible += 1;
     const name = card.dataset.chartName;
     const matches =
       name.toLocaleLowerCase().includes(query) &&
@@ -367,7 +489,8 @@ function filterCharts() {
   });
 
   relatedGroups.forEach((group) => {
-    const hasVisibleCards = group.querySelector(".chart-card:not([hidden])") !== null;
+    const hasVisibleCards =
+      group.querySelector(".chart-card:not([hidden])") !== null;
     group.hidden = !hasVisibleCards;
     if (hasFilter && hasVisibleCards) group.open = true;
   });
@@ -381,13 +504,54 @@ function filterCharts() {
 
   if (chartSearchResults) {
     chartSearchResults.textContent = hasFilter
-      ? `${visibleCount} of ${cards.length} graphs`
-      : `${cards.length} graphs`;
+      ? `${visibleCount} of ${totalEligible} graphs`
+      : `${totalEligible} graphs`;
   }
 }
 
 chartSearch?.addEventListener("input", filterCharts);
 chartFieldSelect?.addEventListener("change", filterCharts);
+
+document.querySelectorAll("[data-chart-mode]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    chartViewMode = btn.dataset.chartMode;
+    document.querySelectorAll("[data-chart-mode]").forEach((b) => {
+      b.classList.toggle("active", b === btn);
+      b.setAttribute("aria-checked", String(b === btn));
+    });
+    applyViewMode();
+  });
+});
+
+document.querySelectorAll("[data-toggle-subcolumns]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const parentName = btn.dataset.toggleSubcolumns;
+    const subCards = document.querySelectorAll(
+      `.chart-card[data-parent-group="${parentName}"][data-is-subcolumn="true"]`
+    );
+    const isExpanded = btn.getAttribute("aria-expanded") === "true";
+    btn.setAttribute("aria-expanded", String(!isExpanded));
+    const count = subCards.length;
+    const textNode = btn.querySelector("span");
+    if (textNode) {
+      textNode.textContent = isExpanded
+        ? `View individual columns (${count})`
+        : `Hide individual columns (${count})`;
+    }
+
+    subCards.forEach((card) => {
+      card.hidden = isExpanded;
+      if (!isExpanded) {
+        card.querySelectorAll("[data-chart-host]").forEach((host) => {
+          const parts = host.dataset.chartHost.split("-").map(Number);
+          renderChart(parts[0], parts[1]);
+        });
+      }
+    });
+  });
+});
+
+/* ---------- events and first render ---------- */
 
 document.querySelectorAll("[data-category-filter]").forEach((select) => {
   const chartIndex = Number(select.dataset.categoryFilter);
@@ -406,10 +570,6 @@ document.getElementById("label-language")?.addEventListener("change", (event) =>
   renderLanguage();
 });
 
-chartData.forEach((chart, chartIndex) => {
-  chart.variants.forEach((variant, variantIndex) => {
-    renderChart(chartIndex, variantIndex);
-  });
-  renderFrequencyTable(chartIndex);
-});
+updateFieldSelectOptions();
+applyViewMode();
 renderLanguage();

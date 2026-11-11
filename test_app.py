@@ -391,12 +391,69 @@ class StudyDashTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Upload study data", response.data)
         self.assertIn(b'id="file-name"', response.data)
+        # Saved dashboards section appears ABOVE the upload form
+        self.assertIn(b"SAVED DASHBOARDS", response.data)
+        self.assertIn(b'id="saved-dashboards"', response.data)
+        self.assertIn(b'id="upload-new"', response.data)
+        dashboard_pos = response.data.index(b"saved-dashboards")
+        upload_pos = response.data.index(b"upload-new")
+        self.assertLess(dashboard_pos, upload_pos, "Saved dashboards section must appear before the upload form")
 
         script_response = self.client.get("/static/upload.js")
         self.assertEqual(script_response.status_code, 200)
         self.assertIn(b"fileInput.addEventListener", script_response.data)
         self.assertIn(b"codebookInput.addEventListener", script_response.data)
         script_response.close()
+
+    def test_save_copy_banner_shown_on_new_upload_and_save_path_persisted(self):
+        # Upload a dataset — redirect includes ?new_upload=1
+        response = self.client.post(
+            "/upload",
+            data={
+                "study_name": "Path test study",
+                "file": (io.BytesIO(b"PID,score\nP1,10\nP2,20\n"), "scores.csv"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 302)
+        location = response.headers.get("Location", "")
+        self.assertIn("new_upload=1", location)
+
+        # Follow the redirect — save-copy banner must be present
+        response = self.client.get(location, follow_redirects=False)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"save-copy-banner", response.data)
+        self.assertIn(b"Save a copy so you can find it later", response.data)
+
+        # Save a path
+        response = self.client.post(
+            "/studies/1/save-path",
+            data={"saved_path": r"C:\Users\researcher\data\scores.csv"},
+            follow_redirects=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"File path saved", response.data)
+
+        # Verify path is stored in DB
+        with app.app_context():
+            dataset = db.session.get(StudyDataset, 1)
+            self.assertEqual(dataset.saved_path, r"C:\Users\researcher\data\scores.csv")
+
+        # Home page shows the path in the saved-dashboards list
+        home = self.client.get("/")
+        self.assertIn(b"scores.csv", home.data)
+        self.assertIn(b"study-icon-saved", home.data)
+
+        # Clear the path
+        response = self.client.post(
+            "/studies/1/save-path",
+            data={"saved_path": ""},
+            follow_redirects=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        with app.app_context():
+            dataset = db.session.get(StudyDataset, 1)
+            self.assertIsNone(dataset.saved_path)
 
     def test_csv_upload_cleans_data_and_renders_dashboard(self):
         csv_data = (
@@ -969,6 +1026,136 @@ class StudyDashTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"Upload a CSV or Excel file", response.data)
+
+    def test_group_question_columns_with_numeric_suffixes_and_delimiters(self):
+        cols = [
+            "what_participant_consented",
+            "what_participant_consented0",
+            "what_participant_consented1",
+            "what_participant_consented2",
+            "ethnicity",
+            "ethnicity0",
+            "ethnicity1",
+            "water_source",
+            "water_source0",
+            "water_source10",
+            "water_source99",
+            "religion_1",
+            "religion_2",
+            "religion_3",
+            "gender",
+            "age",
+            "liters_Ofchibuku",
+            "liters_Ofchibuku2",
+        ]
+        groups = group_question_columns(pd.DataFrame(columns=cols))
+
+        self.assertEqual(
+            groups["what_participant_consented"],
+            [
+                "what_participant_consented0",
+                "what_participant_consented1",
+                "what_participant_consented2",
+            ],
+        )
+        self.assertEqual(
+            groups["ethnicity"],
+            ["ethnicity0", "ethnicity1"],
+        )
+        self.assertEqual(
+            groups["water_source"],
+            ["water_source0", "water_source10", "water_source99"],
+        )
+        self.assertEqual(
+            groups["religion"],
+            ["religion_1", "religion_2", "religion_3"],
+        )
+        self.assertEqual(groups["gender"], ["gender"])
+        self.assertEqual(groups["age"], ["age"])
+        self.assertEqual(groups["liters_Ofchibuku"], ["liters_Ofchibuku"])
+        self.assertEqual(groups["liters_Ofchibuku2"], ["liters_Ofchibuku2"])
+
+    def test_dashboard_renders_grouping_toggles_and_subcolumns(self):
+        csv_data = (
+            "PID,gender,what_participant_consented,what_participant_consented0,what_participant_consented1\n"
+            "P01,0,0 1,1,1\n"
+            "P02,1,0,1,0\n"
+            "P03,0,1,0,1\n"
+        )
+        codebook_data = (
+            "list_name,name,label::English,label::Chichewa,matched dataset variables\n"
+            "what_participant_consented,0,Interview,Kufunsidwa mafunso,what_participant_consented\n"
+            "what_participant_consented,1,Urine sample,Kupereka Mkodzo,what_participant_consented\n"
+            "gender,0,Male,Mwamuna,gender\n"
+            "gender,1,Female,Mkazi,gender\n"
+        )
+        response = self.client.post(
+            "/upload",
+            data={
+                "study_name": "Multi-category grouping study",
+                "file": (io.BytesIO(csv_data.encode("utf-8")), "study.csv"),
+                "codebook": (
+                    io.BytesIO(codebook_data.encode("utf-8")),
+                    "codebook.csv",
+                ),
+            },
+            content_type="multipart/form-data",
+            follow_redirects=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Grouped view (Default)", response.data)
+        self.assertIn(b"Show all columns", response.data)
+        self.assertIn(b"View individual columns (2)", response.data)
+        self.assertIn(b"col-subcolumn", response.data)
+        self.assertIn(b"view-grouped", response.data)
+        self.assertIn(b"Interview", response.data)
+        self.assertIn(b"Urine sample", response.data)
+
+    def test_user_study_dataset_with_codebook_and_grouping(self):
+        csv_data = (
+            "SubmissionDate\tcentre\tPid_lilongwe\tpid_Salima\twhat_participant_consented\twhat_participant_consented0\twhat_participant_consented1\twhat_participant_consented2\twhat_participant_consented8\tethnicity\tethnicity0\tethnicity1\twater_source\twater_source0\twater_source10\twater_source99\n"
+            "2024-03-14\t0\tESD-01-0001\t\t0 1 2 8\t1\t1\t1\t1\t0\t1\t0\t6\t0\t0\t0\n"
+            "2024-03-19\t0\tESD-01-0002\t\t0 1\t1\t1\t0\t0\t1\t0\t1\t10\t0\t1\t0\n"
+        )
+        codebook_data = (
+            "list_name\tname\tlabel::English\tlabel::Chichewa\tmatched dataset variables\n"
+            "what_participant_consented\t0\tInterview\tKufunsidwa mafunso\twhat_participant_consented\n"
+            "what_participant_consented\t1\tUrine sample\tKupereka Mkodzo\twhat_participant_consented\n"
+            "what_participant_consented\t2\tBlood sample\tZoyesa za magazi\twhat_participant_consented\n"
+            "what_participant_consented\t8\tCytology examination\tKutenga zoyesa\twhat_participant_consented\n"
+            "ethnicity\t0\tChewa\tChewa\tethnicity\n"
+            "ethnicity\t1\tNgoni\tNgoni\tethnicity\n"
+            "water_source\t0\tPiped water into house\tMadzi apa mpopi\twater_source\n"
+            "water_source\t1E+1\tLake/pond\tAmnyanja\twater_source\n"
+            "water_source\t99\tOther\tZina\twater_source\n"
+        )
+        response = self.client.post(
+            "/upload",
+            data={
+                "study_name": "Full Survey Grouping Test",
+                "file": (io.BytesIO(csv_data.encode("utf-8")), "study.csv"),
+                "codebook": (
+                    io.BytesIO(codebook_data.encode("utf-8")),
+                    "codebook.csv",
+                ),
+            },
+            content_type="multipart/form-data",
+            follow_redirects=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Interview", response.data)
+        self.assertIn(b"Urine sample", response.data)
+        self.assertIn(b"Cytology examination", response.data)
+        self.assertIn(b"Chewa", response.data)
+        self.assertIn(b"Lake/pond", response.data)
+        self.assertIn(b"ESD-01-0001", response.data)
+        self.assertIn(b"Grouped view (Default)", response.data)
+        self.assertIn(b"Show all columns", response.data)
+        self.assertIn(b"View individual columns (4)", response.data)
+        self.assertIn(b"View individual columns (2)", response.data)
+        self.assertIn(b"View individual columns (3)", response.data)
 
 
 if __name__ == "__main__":

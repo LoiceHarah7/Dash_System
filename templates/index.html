@@ -5,15 +5,41 @@
     <div>
       <p class="eyebrow">YOUR RESEARCH, AT A GLANCE</p>
       <h1>Turn study data into<br><span>clear decisions.</span></h1>
-      <p class="intro">Upload a dataset. We’ll clean it, summarize it, and build your dashboard automatically.</p>
+      <p class="intro">Upload a dataset once — we'll clean it and keep the dashboard ready whenever you need it.</p>
     </div>
     <div class="hero-art" aria-hidden="true"><div class="art-card"><i></i><i></i><i></i><b></b></div><div class="art-dot"></div></div>
   </section>
 
-  <section class="upload-card">
+  {# ── Saved dashboards ──────────────────────────────────────────── #}
+  <section class="studies-section" id="saved-dashboards">
     <div class="section-heading">
-      <div><p class="eyebrow">GET STARTED</p><h2>Upload study data</h2></div>
-      <span class="file-badge">CSV · XLSX · XLS</span>
+      <div><p class="eyebrow">SAVED DASHBOARDS</p><h2>Your studies <span class="count">{{ datasets|length }}</span></h2></div>
+      <a href="#upload-new" class="button upload-shortcut-btn">+ Upload new dataset</a>
+    </div>
+    {% if datasets %}
+      <div class="study-list">
+        {% for study in datasets %}
+          <a class="study-row" href="{{ url_for('dashboard', dataset_id=study.id) }}">
+            <span class="study-icon {% if study.saved_path %}study-icon-saved{% endif %}" title="{% if study.saved_path %}File path: {{ study.saved_path }}{% else %}No local path recorded{% endif %}">{% if study.saved_path %}✦{% else %}▤{% endif %}</span>
+            <span class="study-info">
+              <strong>{{ study.study_name }}</strong>
+              <small>{{ study.filename }} · {{ study.uploaded_at.strftime('%b %d, %Y') }}{% if study.saved_path %} · <span class="saved-path-note" title="{{ study.saved_path }}">{{ study.saved_path | truncate(55, True, '…') }}</span>{% endif %}</small>
+            </span>
+            <span class="study-meta">{{ study.rows }} rows <span>·</span> {{ study.columns }} columns</span>
+            <span class="row-arrow" title="Open dashboard">→</span>
+          </a>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="empty-state"><span>▤</span><strong>No dashboards yet</strong><p>Upload your first dataset below — once it's processed it'll be listed here and you can open it anytime without re-uploading.</p></div>
+    {% endif %}
+  </section>
+
+  {# ── Upload new dataset ────────────────────────────────────────── #}
+  <section class="upload-card" id="upload-new">
+    <div class="section-heading">
+      <div><p class="eyebrow">ADD A NEW STUDY</p><h2>Upload study data</h2></div>
+      <span class="file-badge">CSV · TSV · XLSX · XLS</span>
     </div>
     <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data">
       <label class="field-label" for="study_name">Study name</label>
@@ -21,8 +47,8 @@
       <label class="dropzone" for="file">
         <span class="upload-icon">↑</span>
         <strong id="file-name">Choose a data file to upload</strong>
-        <span id="file-details" aria-live="polite">CSV or Excel · up to 25 MB per request</span>
-        <input id="file" name="file" type="file" accept=".csv,.xlsx,.xls" required>
+        <span id="file-details" aria-live="polite">CSV, TSV or Excel · up to 25 MB per request</span>
+        <input id="file" name="file" type="file" accept=".csv,.tsv,.xlsx,.xls" required>
       </label>
       <label class="codebook-upload" for="codebook">
         <span class="codebook-icon">⌗</span>
@@ -36,25 +62,4 @@
     <p class="privacy-note">Your file is processed for your dashboard and stored in your configured database.</p>
   </section>
   <script src="{{ url_for('static', filename='upload.js') }}" defer></script>
-
-  <section class="studies-section">
-    <div class="section-heading">
-      <div><p class="eyebrow">WORKSPACE</p><h2>Your studies <span class="count">{{ datasets|length }}</span></h2></div>
-      <span class="muted">Latest uploads first</span>
-    </div>
-    {% if datasets %}
-      <div class="study-list">
-        {% for study in datasets %}
-          <a class="study-row" href="{{ url_for('dashboard', dataset_id=study.id) }}">
-            <span class="study-icon">▤</span>
-            <span class="study-info"><strong>{{ study.study_name }}</strong><small>{{ study.filename }} · {{ study.uploaded_at.strftime('%b %d, %Y') }}</small></span>
-            <span class="study-meta">{{ study.rows }} rows <span>·</span> {{ study.columns }} columns</span>
-            <span class="row-arrow">→</span>
-          </a>
-        {% endfor %}
-      </div>
-    {% else %}
-      <div class="empty-state"><span>▤</span><strong>Your studies will appear here</strong><p>Upload your first dataset to see it cleaned and visualized.</p></div>
-    {% endif %}
-  </section>
 {% endblock %}
