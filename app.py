@@ -1562,12 +1562,48 @@ def upload():
     )
     db.session.add(dataset)
     try:
+        db.session.flush()
+
+        # Automatically create a persistent study storage folder
+        safe_study_title = (
+            re.sub(r"[^\w\-]+", "_", study_name).strip("_") or f"study_{dataset.id}"
+        )
+        storage_dir = os.path.abspath(
+            os.path.join(
+                app.root_path, "saved_studies", f"{safe_study_title}_{dataset.id}"
+            )
+        )
+        try:
+            os.makedirs(storage_dir, exist_ok=True)
+            cleaned_file_path = os.path.join(
+                storage_dir, f"{safe_study_title}_cleaned.csv"
+            )
+            cleaned.to_csv(cleaned_file_path, index=False)
+            file.seek(0)
+            raw_copy_path = os.path.join(
+                storage_dir, f"original_{os.path.basename(file.filename)}"
+            )
+            with open(raw_copy_path, "wb") as f_out:
+                f_out.write(file.read())
+            if codebook_file is not None and codebook_file.filename:
+                codebook_file.seek(0)
+                cb_copy_path = os.path.join(
+                    storage_dir,
+                    f"codebook_{os.path.basename(codebook_file.filename)}",
+                )
+                with open(cb_copy_path, "wb") as cb_out:
+                    cb_out.write(codebook_file.read())
+        except Exception:
+            app.logger.warning(
+                "Could not auto-populate storage folder %s", storage_dir
+            )
+
+        dataset.saved_path = storage_dir
+
         detected_pid_columns = detect_pid_columns(cleaned.columns)
         if codebook_data is not None:
-            db.session.flush()
             codebook_data.dataset_id = dataset.id
             db.session.add(codebook_data)
-        db.session.flush()
         if len(detected_pid_columns) == 1:
             db.session.add(
                 StudyPidSelection(
@@ -2077,8 +2113,16 @@ def save_dataset_path(dataset_id):
     if dataset is None:
         abort(404)
     path = request.form.get("saved_path", "").strip()
-    # Accept an empty string to clear the path, any non-empty value as the note.
+    return_to = request.form.get("return_to", "")
     dataset.saved_path = path if path else None
+    if path:
+        try:
+            os.makedirs(path, exist_ok=True)
+            if dataset.records and dataset.column_names:
+                df = pd.DataFrame(dataset.records, columns=dataset.column_names)
+                df.to_csv(os.path.join(path, "cleaned_dataset.csv"), index=False)
+        except Exception:
+            pass
     try:
         db.session.commit()
     except SQLAlchemyError:
@@ -2089,7 +2133,47 @@ def save_dataset_path(dataset_id):
         flash(f"File path saved: {path}", "success")
     else:
         flash("File path cleared.", "success")
+    if return_to == "index":
+        return redirect(url_for("index"))
     return redirect(url_for("dashboard", dataset_id=dataset.id))
+
+
+@app.route("/studies/<int:dataset_id>/delete", methods=["POST"])
+def delete_study(dataset_id):
+    """Delete an individual study dataset and its associated codebooks and tracking records."""
+    dataset = db.session.get(StudyDataset, dataset_id)
+    if dataset is None:
+        abort(404)
+    study_name = dataset.study_name
+    try:
+        StudyPidSelection.query.filter_by(dataset_id=dataset_id).delete()
+        StudyCodebook.query.filter_by(dataset_id=dataset_id).delete()
+        ParticipantTracking.query.filter_by(dataset_id=dataset_id).delete()
+        db.session.delete(dataset)
+        db.session.commit()
+        flash(f'Study "{study_name}" and its dashboard were deleted.', "success")
+    except SQLAlchemyError:
+        db.session.rollback()
+        app.logger.exception("Could not delete study %s", dataset_id)
+        flash("Could not delete study. Database error occurred.", "error")
+    return redirect(url_for("index"))
+
+
+@app.route("/studies/clear-history", methods=["POST"])
+def clear_all_history():
+    """Clear all study history and saved dashboards."""
+    try:
+        StudyPidSelection.query.delete()
+        StudyCodebook.query.delete()
+        ParticipantTracking.query.delete()
+        StudyDataset.query.delete()
+        db.session.commit()
+        flash("All study history and dashboards have been cleared.", "success")
+    except SQLAlchemyError:
+        db.session.rollback()
+        app.logger.exception("Could not clear study history")
+        flash("Could not clear history. Database error occurred.", "error")
+    return redirect(url_for("index"))
 
 
 with app.app_context():

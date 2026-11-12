@@ -220,19 +220,33 @@ document.querySelectorAll("[data-table-mode]").forEach((button) => {
 (function initTrackingMinimise() {
   const btn = document.getElementById("btn-minimise-tracking");
   const body = document.getElementById("tracking-body");
+  const trackingNavJump = document.getElementById("tracking-nav-jump");
   if (!btn || !body) return;
+
+  function setTrackingState(expanded) {
+    btn.setAttribute("aria-expanded", String(expanded));
+    body.hidden = !expanded;
+    const icon = btn.querySelector(".minimise-icon");
+    if (icon) icon.textContent = expanded ? "▲" : "▼";
+    const label = btn.querySelector(".minimise-label");
+    if (label) {
+      label.textContent = expanded ? "Minimise" : "Expand Tracking";
+    } else {
+      btn.childNodes.forEach((n) => {
+        if (n.nodeType === Node.TEXT_NODE) {
+          n.textContent = expanded ? " Minimise" : " Expand Tracking";
+        }
+      });
+    }
+  }
 
   btn.addEventListener("click", () => {
     const isExpanded = btn.getAttribute("aria-expanded") === "true";
-    btn.setAttribute("aria-expanded", String(!isExpanded));
-    body.hidden = isExpanded;
-    const icon = btn.querySelector(".minimise-icon");
-    if (icon) icon.textContent = isExpanded ? "▼" : "▲";
-    btn.childNodes.forEach((n) => {
-      if (n.nodeType === Node.TEXT_NODE) {
-        n.textContent = isExpanded ? " Expand" : " Minimise";
-      }
-    });
+    setTrackingState(!isExpanded);
+  });
+
+  trackingNavJump?.addEventListener("click", () => {
+    setTrackingState(true);
   });
 })();
 

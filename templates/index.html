@@ -5,33 +5,93 @@
     <div>
       <p class="eyebrow">YOUR RESEARCH, AT A GLANCE</p>
       <h1>Turn study data into<br><span>clear decisions.</span></h1>
-      <p class="intro">Upload a dataset once — we'll clean it and keep the dashboard ready whenever you need it.</p>
+      <p class="intro">Upload a dataset once — we'll clean it, create its dedicated loading folder, and keep the dashboard ready whenever you need it.</p>
     </div>
     <div class="hero-art" aria-hidden="true"><div class="art-card"><i></i><i></i><i></i><b></b></div><div class="art-dot"></div></div>
   </section>
 
-  {# ── Saved dashboards ──────────────────────────────────────────── #}
+  {# ── Saved dashboards / Main active studies ─────────────────────────── #}
   <section class="studies-section" id="saved-dashboards">
     <div class="section-heading">
-      <div><p class="eyebrow">SAVED DASHBOARDS</p><h2>Your studies <span class="count">{{ datasets|length }}</span></h2></div>
+      <div>
+        <p class="eyebrow">SAVED DASHBOARDS</p>
+        <h2>Your studies <span class="count">{{ datasets|length }}</span></h2>
+      </div>
       <a href="#upload-new" class="button upload-shortcut-btn">+ Upload new dataset</a>
     </div>
+
     {% if datasets %}
-      <div class="study-list">
+      <div class="study-cards-grid">
         {% for study in datasets %}
-          <a class="study-row" href="{{ url_for('dashboard', dataset_id=study.id) }}">
-            <span class="study-icon {% if study.saved_path %}study-icon-saved{% endif %}" title="{% if study.saved_path %}File path: {{ study.saved_path }}{% else %}No local path recorded{% endif %}">{% if study.saved_path %}✦{% else %}▤{% endif %}</span>
-            <span class="study-info">
-              <strong>{{ study.study_name }}</strong>
-              <small>{{ study.filename }} · {{ study.uploaded_at.strftime('%b %d, %Y') }}{% if study.saved_path %} · <span class="saved-path-note" title="{{ study.saved_path }}">{{ study.saved_path | truncate(55, True, '…') }}</span>{% endif %}</small>
-            </span>
-            <span class="study-meta">{{ study.rows }} rows <span>·</span> {{ study.columns }} columns</span>
-            <span class="row-arrow" title="Open dashboard">→</span>
-          </a>
+          <div class="study-main-card">
+            <div class="study-main-card-header">
+              <div class="study-icon-wrap">
+                <span class="study-icon {% if study.saved_path %}study-icon-saved{% endif %}" title="{% if study.saved_path %}File folder: {{ study.saved_path }}{% else %}No local path recorded{% endif %}">
+                  {% if study.saved_path %}📂{% else %}▤{% endif %}
+                </span>
+              </div>
+              <div class="study-header-text">
+                <h3 class="study-title">
+                  <a href="{{ url_for('dashboard', dataset_id=study.id) }}">{{ study.study_name }}</a>
+                </h3>
+                <span class="study-filename">{{ study.filename }} · Uploaded {{ study.uploaded_at.strftime('%b %d, %Y') }}</span>
+              </div>
+              <div class="study-actions-cluster">
+                <a class="button primary study-open-btn" href="{{ url_for('dashboard', dataset_id=study.id) }}">
+                  Open Dashboard →
+                </a>
+                <form method="post" action="{{ url_for('delete_study', dataset_id=study.id) }}" onsubmit="return confirm('Are you sure you want to delete &quot;{{ study.study_name }}&quot;? This cannot be undone.');" style="display:inline;">
+                  <button type="submit" class="button danger study-del-btn" title="Delete this study">
+                    🗑 Delete
+                  </button>
+                </form>
+              </div>
+            </div>
+
+            {# Folder path display & change option #}
+            <div class="study-folder-banner">
+              <div class="folder-banner-left">
+                <span class="folder-icon">📁</span>
+                <div class="folder-info">
+                  <span class="folder-caption">Study Loading Folder:</span>
+                  {% if study.saved_path %}
+                    <code class="folder-path-display" title="{{ study.saved_path }}">{{ study.saved_path }}</code>
+                  {% else %}
+                    <span class="folder-path-empty">No folder assigned</span>
+                  {% endif %}
+                </div>
+              </div>
+              <details class="folder-change-details">
+                <summary class="folder-change-toggle" title="Change folder path">✏️ Change Path</summary>
+                <form class="folder-change-form" method="post" action="{{ url_for('save_dataset_path', dataset_id=study.id) }}">
+                  <input type="hidden" name="return_to" value="index">
+                  <input type="text" name="saved_path" class="folder-path-input" placeholder="e.g. C:\Research\Studies\Study1" value="{{ study.saved_path or '' }}" required>
+                  <button type="submit" class="button small">Save</button>
+                </form>
+              </details>
+            </div>
+
+            <div class="study-card-footer">
+              <div class="study-stats-pills">
+                <span class="stat-pill"><strong>{{ "{:,}".format(study.rows) }}</strong> rows</span>
+                <span class="stat-pill"><strong>{{ "{:,}".format(study.columns) }}</strong> columns</span>
+                {% if study.duplicates_removed %}
+                  <span class="stat-pill pill-cleaned">{{ study.duplicates_removed }} duplicates removed</span>
+                {% endif %}
+                {% if study.missing_values_filled %}
+                  <span class="stat-pill pill-cleaned">{{ study.missing_values_filled }} missing filled</span>
+                {% endif %}
+              </div>
+            </div>
+          </div>
         {% endfor %}
       </div>
     {% else %}
-      <div class="empty-state"><span>▤</span><strong>No dashboards yet</strong><p>Upload your first dataset below — once it's processed it'll be listed here and you can open it anytime without re-uploading.</p></div>
+      <div class="empty-state">
+        <span>▤</span>
+        <strong>No dashboards yet</strong>
+        <p>Upload your first dataset below — once processed, its dedicated loading folder will be created and listed here so you can open it anytime without re-uploading.</p>
+      </div>
     {% endif %}
   </section>
 
@@ -59,7 +119,75 @@
       <p class="codebook-help">Code, variable/response-list, and label columns are detected from common names. Language labels are optional; unclear formats are saved with a review warning.</p>
       <button class="button primary full-width" type="submit">Clean data &amp; build dashboard <span>→</span></button>
     </form>
-    <p class="privacy-note">Your file is processed for your dashboard and stored in your configured database.</p>
+    <p class="privacy-note">Your file is cleaned, a local storage folder is created, and your dashboard is stored in your database.</p>
   </section>
+
+  {# ── History section at the bottom ─────────────────────────────── #}
+  <section class="history-section" id="study-history">
+    <div class="section-heading history-heading">
+      <div>
+        <p class="eyebrow">ACTIVITY LOG</p>
+        <h2>Study Upload History <span class="count">{{ datasets|length }}</span></h2>
+      </div>
+      {% if datasets %}
+        <form method="post" action="{{ url_for('clear_all_history') }}" onsubmit="return confirm('⚠️ Are you sure you want to clear ALL study history? This will delete all saved dashboards, datasets, and tracking records. This action cannot be undone.');">
+          <button type="submit" class="button danger clear-history-btn" id="btn-clear-history">
+            🗑 Clear All History
+          </button>
+        </form>
+      {% endif %}
+    </div>
+
+    {% if datasets %}
+      <div class="table-wrap history-table-wrap">
+        <table class="history-table">
+          <thead>
+            <tr>
+              <th style="width: 45px;">#</th>
+              <th>Study Name</th>
+              <th>Upload Date</th>
+              <th>Source File</th>
+              <th>Loading Folder</th>
+              <th>Records</th>
+              <th style="text-align: right;">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for s in datasets %}
+              <tr>
+                <td>{{ loop.index }}</td>
+                <td>
+                  <strong><a href="{{ url_for('dashboard', dataset_id=s.id) }}">{{ s.study_name }}</a></strong>
+                </td>
+                <td>{{ s.uploaded_at.strftime('%b %d, %Y at %H:%M') }}</td>
+                <td><code>{{ s.filename }}</code></td>
+                <td>
+                  {% if s.saved_path %}
+                    <code class="folder-path-cell" title="{{ s.saved_path }}">📂 {{ s.saved_path | truncate(45, True, '…') }}</code>
+                  {% else %}
+                    <span class="muted">—</span>
+                  {% endif %}
+                </td>
+                <td>{{ "{:,}".format(s.rows) }} rows × {{ s.columns }} cols</td>
+                <td style="text-align: right; white-space: nowrap;">
+                  <a class="button small history-open-btn" href="{{ url_for('dashboard', dataset_id=s.id) }}">Open</a>
+                  <form method="post" action="{{ url_for('delete_study', dataset_id=s.id) }}" onsubmit="return confirm('Delete &quot;{{ s.study_name }}&quot;?');" style="display:inline;">
+                    <button type="submit" class="button danger small history-del-btn" title="Delete this study">🗑</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="empty-state">
+        <span>🕒</span>
+        <strong>No upload history yet</strong>
+        <p>When you upload datasets, a complete activity log will be recorded here.</p>
+      </div>
+    {% endif %}
+  </section>
+
   <script src="{{ url_for('static', filename='upload.js') }}" defer></script>
 {% endblock %}

@@ -1253,6 +1253,88 @@ class StudyDashTests(unittest.TestCase):
         self.assertIn(b"Successfully updated 2 tracking records for Salima", resp_upload.data)
         self.assertIn(b"High Blood Pressure", resp_upload.data)
 
+    def test_study_folder_created_on_upload_and_delete_study(self):
+        # 1. Upload study
+        response = self.client.post(
+            "/upload",
+            data={
+                "study_name": "Delete Folder Test Study",
+                "file": (io.BytesIO(b"PID,score\nP1,10\nP2,20\n"), "scores.csv"),
+            },
+            content_type="multipart/form-data",
+            follow_redirects=True,
+        )
+        self.assertEqual(response.status_code, 200)
+
+        with app.app_context():
+            dataset = StudyDataset.query.filter_by(study_name="Delete Folder Test Study").first()
+            self.assertIsNotNone(dataset)
+            self.assertIsNotNone(dataset.saved_path)
+            self.assertTrue(os.path.isdir(dataset.saved_path))
+            dataset_id = dataset.id
+
+        # 2. Delete study
+        resp_del = self.client.post(
+            f"/studies/{dataset_id}/delete",
+            follow_redirects=True,
+        )
+        self.assertEqual(resp_del.status_code, 200)
+        self.assertIn(b"deleted", resp_del.data)
+
+        with app.app_context():
+            deleted = db.session.get(StudyDataset, dataset_id)
+            self.assertIsNone(deleted)
+
+    def test_clear_all_history_removes_all_studies(self):
+        # Upload two studies
+        self.client.post(
+            "/upload",
+            data={
+                "study_name": "Study Alpha",
+                "file": (io.BytesIO(b"PID,val\nA1,1\n"), "a.csv"),
+            },
+            content_type="multipart/form-data",
+        )
+        self.client.post(
+            "/upload",
+            data={
+                "study_name": "Study Beta",
+                "file": (io.BytesIO(b"PID,val\nB1,2\n"), "b.csv"),
+            },
+            content_type="multipart/form-data",
+        )
+
+        with app.app_context():
+            count_before = StudyDataset.query.count()
+            self.assertGreaterEqual(count_before, 2)
+
+        # Clear history
+        resp_clear = self.client.post("/studies/clear-history", follow_redirects=True)
+        self.assertEqual(resp_clear.status_code, 200)
+        self.assertIn(b"All study history and dashboards have been cleared", resp_clear.data)
+
+        with app.app_context():
+            self.assertEqual(StudyDataset.query.count(), 0)
+
+    def test_tracking_section_is_minimised_initially_on_dashboard(self):
+        self.client.post(
+            "/upload",
+            data={
+                "study_name": "Tracking Minimise Test",
+                "file": (io.BytesIO(b"PID,val\nT1,100\n"), "track_test.csv"),
+            },
+            content_type="multipart/form-data",
+        )
+        with app.app_context():
+            dataset = StudyDataset.query.filter_by(study_name="Tracking Minimise Test").first()
+            dash_url = f"/studies/{dataset.id}"
+
+        resp = self.client.get(dash_url)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(b'id="tracking-body" hidden', resp.data)
+        self.assertIn(b'aria-expanded="false"', resp.data)
+        self.assertIn(b"Expand Tracking", resp.data)
+
 
 if __name__ == "__main__":
     unittest.main()

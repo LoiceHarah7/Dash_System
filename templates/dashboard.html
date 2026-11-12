@@ -86,15 +86,11 @@
     <div class="save-copy-info">
       <span class="save-copy-icon">📂</span>
       <div>
-        {% if new_upload and not saved_path %}
-          <strong>Save a copy so you can find it later</strong>
-          <p>Download the cleaned dataset to your computer, then paste the file path below. This lets you quickly locate it and keeps your dashboard permanently accessible from the home page.</p>
-        {% elif saved_path %}
-          <strong>File path recorded</strong>
-          <p>Your dataset is saved at <code>{{ saved_path }}</code>. Update the path any time below.</p>
+        <strong>Save a copy so you can find it later</strong>
+        {% if saved_path %}
+          <p>Your study storage folder was automatically created at: <code>{{ saved_path }}</code>. Cleaned and original files are saved there to load from every time. Update or change the path below if needed.</p>
         {% else %}
-          <strong>No local file path recorded yet</strong>
-          <p>Paste the path to where you've saved this dataset file so you can find it quickly from the home page.</p>
+          <p>Download the cleaned dataset to your computer, then paste the file path below. This lets you quickly locate it and keeps your dashboard permanently accessible from the home page.</p>
         {% endif %}
         <div class="save-copy-actions">
           <a class="button save-copy-download-btn" href="{{ url_for('download_cleaned_data', dataset_id=dataset.id) }}">↓ Cleaned data</a>
@@ -285,13 +281,13 @@
         <button type="button" class="button tracking-upload-toggle-btn" id="btn-toggle-tracking-upload" aria-expanded="false">
           <span>↑</span> Upload / Update Sheet
         </button>
-        <button type="button" class="button tracking-minimise-btn" id="btn-minimise-tracking" aria-expanded="true" aria-controls="tracking-body" title="Minimise / expand this section">
-          <span class="minimise-icon">▲</span> Minimise
+        <button type="button" class="button tracking-minimise-btn" id="btn-minimise-tracking" aria-expanded="false" aria-controls="tracking-body" title="Expand or minimise participant procedure tracking">
+          <span class="minimise-icon">▼</span> <span class="minimise-label">Expand Tracking</span>
         </button>
       </div>
     </div>
 
-    <div id="tracking-body">
+    <div id="tracking-body" hidden>
 
     <p class="tracking-intro-text">      Track participant completion across each study activity: <strong>Questionnaire</strong>, <strong>Dental exam</strong>, and <strong>Endoscopy (ENDO)</strong>. See exact reasons and clinical conditions documented when an activity was not performed.
     </p>

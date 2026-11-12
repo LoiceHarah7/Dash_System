@@ -19,3 +19,8 @@ instance/
 #oparating system files
 .DS_Store
 Thumbs.db
+
+# Uploaded study local storage folders
+saved_studies/*
+!saved_studies/.gitkeep
+saved_studies/**/

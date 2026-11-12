@@ -2662,3 +2662,304 @@ tbody tr:last-child td {
 .pid-modal-toggle-btn.active:hover {
   background: #fde047;
 }
+
+
+/* ================================================================
+   Study Cards Grid (Main Studies Section)
+   ================================================================ */
+.study-cards-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  margin-top: 1rem;
+}
+
+.study-main-card {
+  background: var(--color-background, #ffffff);
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 14px;
+  padding: 1.25rem 1.5rem;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.04);
+  transition: transform 0.15s, box-shadow 0.15s, border-color 0.15s;
+}
+
+.study-main-card:hover {
+  border-color: #c7d2fe;
+  box-shadow: 0 8px 24px rgba(79, 70, 229, 0.08);
+}
+
+.study-main-card-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.study-icon-wrap .study-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  font-size: 1.4rem;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+}
+
+.study-icon-wrap .study-icon-saved {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+}
+
+.study-header-text {
+  flex: 1;
+  min-width: 220px;
+}
+
+.study-title {
+  margin: 0;
+  font-size: 1.2rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.study-title a {
+  color: var(--color-text, #111827);
+  text-decoration: none;
+}
+
+.study-title a:hover {
+  color: #4f46e5;
+}
+
+.study-filename {
+  font-size: 0.85rem;
+  color: var(--color-muted, #6b7280);
+}
+
+.study-actions-cluster {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.study-open-btn {
+  font-size: 0.9rem;
+  padding: 0.5rem 1.1rem;
+  font-weight: 600;
+}
+
+.study-del-btn,
+.history-del-btn {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fca5a5;
+  cursor: pointer;
+  padding: 0.5rem 0.85rem;
+  border-radius: 7px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition: background 0.15s;
+}
+
+.study-del-btn:hover,
+.history-del-btn:hover {
+  background: #fecaca;
+  color: #7f1d1d;
+}
+
+/* ================================================================
+   Study Folder Banner (Clearly showing and changing path)
+   ================================================================ */
+.study-folder-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 0.65rem 1rem;
+  margin: 0.9rem 0 0.75rem;
+  flex-wrap: wrap;
+}
+
+.folder-banner-left {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex: 1;
+  min-width: 250px;
+}
+
+.folder-icon {
+  font-size: 1.15rem;
+}
+
+.folder-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  overflow: hidden;
+}
+
+.folder-caption {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--color-muted, #6b7280);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.folder-path-display {
+  font-size: 0.82rem;
+  background: #fff;
+  padding: 0.2rem 0.5rem;
+  border-radius: 5px;
+  border: 1px solid #cbd5e1;
+  color: #0f172a;
+  word-break: break-all;
+  font-family: monospace;
+}
+
+.folder-change-details {
+  position: relative;
+}
+
+.folder-change-toggle {
+  font-size: 0.8rem;
+  color: #4f46e5;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  list-style: none;
+}
+
+.folder-change-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.folder-change-toggle:hover {
+  background: #e0e7ff;
+}
+
+.folder-change-form {
+  display: flex;
+  gap: 0.4rem;
+  margin-top: 0.4rem;
+}
+
+.folder-path-input {
+  font-size: 0.82rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  min-width: 260px;
+}
+
+/* ================================================================
+   Study Card Stats Footer
+   ================================================================ */
+.study-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.study-stats-pills {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.stat-pill {
+  font-size: 0.8rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 20px;
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.pill-cleaned {
+  background: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+}
+
+/* ================================================================
+   History Section (At the Bottom)
+   ================================================================ */
+.history-section {
+  margin-top: 3.5rem;
+  padding-top: 2rem;
+  border-top: 2px dashed var(--color-border, #e5e7eb);
+}
+
+.history-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.clear-history-btn {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fca5a5;
+  cursor: pointer;
+  padding: 0.45rem 1rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.clear-history-btn:hover {
+  background: #fecaca;
+  color: #7f1d1d;
+  transform: translateY(-1px);
+}
+
+.history-table-wrap {
+  margin-top: 1rem;
+}
+
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.history-table th,
+.history-table td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+  font-size: 0.88rem;
+}
+
+.history-table th {
+  background: #f8fafc;
+  color: var(--color-muted, #6b7280);
+  font-weight: 600;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.folder-path-cell {
+  font-size: 0.78rem;
+  background: #f1f5f9;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  color: #334155;
+}
+
+.history-open-btn {
+  font-size: 0.8rem;
+  padding: 0.25rem 0.6rem;
+  margin-right: 0.35rem;
+}
