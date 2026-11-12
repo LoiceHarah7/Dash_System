@@ -1863,3 +1863,780 @@ tbody tr:last-child td {
 .duplicate-table-wrap.view-all .row-subcolumn {
     display: table-row !important;
 }
+
+/* ===== Download cluster in dashboard header ===== */
+.download-cluster {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.download-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 42px;
+    padding: 0 16px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 700;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: all 0.15s ease;
+}
+
+.download-all-btn {
+    background: var(--purple);
+    color: #fff;
+    border: 0;
+}
+
+.download-all-btn:hover {
+    background: #6047ce;
+}
+
+.download-sub-button {
+    background: #fff;
+    color: var(--purple);
+    border: 1px solid #d5cff5;
+    font-size: 13px;
+    font-weight: 700;
+    height: 42px;
+    padding: 0 14px;
+    border-radius: 8px;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+}
+
+.download-sub-button:hover {
+    background: #f7f5ff;
+    border-color: var(--purple);
+}
+
+.tracking-nav-jump {
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #fdfcff;
+    color: var(--purple);
+    border: 1px solid #dcd5f7;
+    margin-left: 6px;
+}
+
+.tracking-nav-jump:hover {
+    background: #f3effe;
+}
+
+/* ===== Participant Procedure Tracking Section ===== */
+.tracking-section {
+    margin-top: 42px;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 28px 30px;
+    box-shadow: 0 4px 18px #282d5408;
+}
+
+.tracking-header {
+    margin-bottom: 8px;
+}
+
+.tracking-top-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.tracking-download-btn {
+    background: #f4f0ff;
+    color: var(--purple);
+    border: 1px solid #d6ccf5;
+    font-size: 13px;
+    font-weight: 700;
+    height: 38px;
+    padding: 0 15px;
+    border-radius: 8px;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.tracking-download-btn:hover {
+    background: #eae2fc;
+}
+
+.tracking-upload-toggle-btn {
+    background: #fff;
+    color: #4b5268;
+    border: 1px solid #d5d7e4;
+    font-size: 13px;
+    font-weight: 600;
+    height: 38px;
+    padding: 0 14px;
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.tracking-upload-toggle-btn:hover {
+    background: #f7f8fb;
+    border-color: #bcc1d4;
+}
+
+.tracking-intro-text {
+    font-size: 14px;
+    color: #5d647c;
+    margin: 4px 0 20px;
+    line-height: 1.6;
+}
+
+.tracking-upload-drawer {
+    background: #fbfaff;
+    border: 1px dashed #cfc8f2;
+    border-radius: 10px;
+    padding: 18px 20px;
+    margin: 16px 0 24px;
+}
+
+.drawer-header {
+    margin-bottom: 12px;
+}
+
+.drawer-header strong {
+    font-size: 15px;
+    display: block;
+    margin-bottom: 4px;
+}
+
+.tracking-upload-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.tracking-select {
+    height: 38px;
+    padding: 0 12px;
+    border-radius: 6px;
+    border: 1px solid #d5d4e8;
+    font-size: 13px;
+    background: #fff;
+}
+
+.tracking-file-input {
+    font-size: 13px;
+}
+
+.tracking-submit-btn {
+    height: 38px;
+    padding: 0 16px;
+    font-size: 13px;
+}
+
+.tracking-cancel-btn {
+    background: transparent;
+    color: #6c738a;
+    border: 1px solid #dcdfe8;
+    height: 38px;
+    padding: 0 12px;
+    font-size: 13px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+/* Site tabs */
+.tracking-site-tabs {
+    display: flex;
+    gap: 8px;
+    margin: 20px 0 18px;
+    border-bottom: 2px solid #f0edf8;
+    padding-bottom: 8px;
+}
+
+.tracking-site-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: #f5f4fb;
+    color: #565d75;
+    border: 0;
+    padding: 10px 18px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.tracking-site-tab:hover {
+    background: #eae7f8;
+    color: var(--purple);
+}
+
+.tracking-site-tab.active {
+    background: var(--purple);
+    color: #fff;
+}
+
+.tab-count-badge {
+    background: rgba(0,0,0,0.08);
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 700;
+}
+
+.tracking-site-tab.active .tab-count-badge {
+    background: rgba(255,255,255,0.25);
+    color: #fff;
+}
+
+/* Tracking KPI Cards */
+.tracking-kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 12px;
+    margin: 18px 0;
+}
+
+@media (max-width: 1024px) {
+    .tracking-kpi-grid {
+        grid-template-columns: repeat(3, 1fr);
+    }
+}
+
+@media (max-width: 640px) {
+    .tracking-kpi-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+.tracking-kpi-card {
+    background: #fcfbff;
+    border: 1px solid #eae8f5;
+    border-radius: 10px;
+    padding: 14px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    box-shadow: 0 2px 8px #282d5406;
+}
+
+.kpi-card-green {
+    border-top: 3px solid #22c55e;
+}
+
+.kpi-card-teal {
+    border-top: 3px solid #06b6d4;
+}
+
+.kpi-card-purple {
+    border-top: 3px solid #7c3aed;
+}
+
+.kpi-card-amber {
+    border-top: 3px solid #f59e0b;
+}
+
+.kpi-card-grey {
+    border-top: 3px solid #94a3b8;
+}
+
+.tracking-kpi-card .kpi-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #6f7590;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.tracking-kpi-card .kpi-value {
+    font-size: 24px;
+    font-weight: 800;
+    color: #1e243b;
+    letter-spacing: -0.5px;
+}
+
+.tracking-kpi-card .kpi-desc {
+    font-size: 12px;
+    color: #6f7590;
+}
+
+/* Reasons breakdown cloud */
+.tracking-reasons-container {
+    background: #fdfcff;
+    border: 1px solid #ece7f8;
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin: 16px 0;
+}
+
+.reasons-heading {
+    display: block;
+    font-size: 12px;
+    font-weight: 700;
+    color: #555b74;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+}
+
+.reasons-pills-wrap {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+
+.reason-filter-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 11px;
+    background: #f4f1fd;
+    border: 1px solid #ded8f6;
+    border-radius: 16px;
+    font-size: 12px;
+    font-weight: 600;
+    color: #4b3e8a;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.reason-filter-pill:hover {
+    background: #e9e2fb;
+    border-color: var(--purple);
+}
+
+.reason-filter-pill.active {
+    background: var(--purple);
+    color: #fff;
+    border-color: var(--purple);
+}
+
+.reason-pill-count {
+    background: rgba(0,0,0,0.08);
+    padding: 1px 6px;
+    border-radius: 10px;
+    font-size: 11px;
+}
+
+.reason-filter-pill.active .reason-pill-count {
+    background: rgba(255,255,255,0.25);
+    color: #fff;
+}
+
+.reason-clear-pill {
+    background: transparent;
+    color: #ef4444;
+    border: 1px solid #fecaca;
+    border-radius: 16px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+/* Toolbar controls */
+.tracking-filter-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin: 16px 0;
+    flex-wrap: wrap;
+}
+
+.tracking-search-box {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid #dcdbe8;
+    border-radius: 8px;
+    padding: 0 12px;
+    background: #fff;
+    height: 38px;
+    flex: 1;
+    min-width: 240px;
+    max-width: 380px;
+}
+
+.tracking-search-box:focus-within {
+    border-color: var(--purple);
+    box-shadow: 0 0 0 3px #7057df16;
+}
+
+.tracking-filter-input {
+    border: 0;
+    outline: none;
+    font-size: 13px;
+    width: 100%;
+}
+
+.tracking-filter-btns {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.tracking-filter-btn {
+    height: 36px;
+    padding: 0 12px;
+    font-size: 12px;
+    font-weight: 600;
+    background: #f5f4fb;
+    color: #555b74;
+    border: 1px solid #dedcf0;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.tracking-filter-btn.active {
+    background: #ece7fb;
+    color: var(--purple);
+    border-color: var(--purple);
+    font-weight: 700;
+}
+
+/* Badges inside tracking table */
+.status-badge {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+}
+
+.badge-yes {
+    background: #ecfdf5;
+    color: #15803d;
+    border: 1px solid #bbf7d0;
+}
+
+.badge-no {
+    background: #fef2f2;
+    color: #b91c1c;
+    border: 1px solid #fecaca;
+}
+
+.badge-pending {
+    background: #f3f4f6;
+    color: #6b7280;
+    border: 1px solid #e5e7eb;
+}
+
+.badge-dataset-in {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    background: #ecfdf5;
+    color: #047857;
+    border: 1px solid #a7f3d0;
+}
+
+.badge-dataset-out {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    background: #fff7ed;
+    color: #c2410c;
+    border: 1px solid #fed7aa;
+}
+
+.reason-highlight {
+    font-weight: 600;
+    color: #b91c1c;
+    font-size: 13px;
+}
+
+.tracking-comment-col {
+    max-width: 260px;
+}
+
+
+/* ================================================================
+   Tracking Actions Column & Edit Button
+   ================================================================ */
+.tracking-actions-col {
+  white-space: nowrap;
+}
+
+.edit-tracking-btn {
+  font-size: 0.78rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 6px;
+  background: var(--color-surface, #f3f4f6);
+  border: 1px solid var(--color-border, #d1d5db);
+  cursor: pointer;
+  color: var(--color-text, #374151);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.edit-tracking-btn:hover {
+  background: #e0e7ff;
+  border-color: #818cf8;
+  color: #3730a3;
+}
+
+/* ================================================================
+   Dash Modal (shared base for tracking-edit & pid-viewer)
+   ================================================================ */
+.dash-modal {
+  border: none;
+  border-radius: 14px;
+  padding: 0;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+  max-width: min(680px, 95vw);
+  width: 100%;
+  background: var(--color-background, #ffffff);
+  color: var(--color-text, #111827);
+}
+
+.dash-modal::backdrop {
+  background: rgba(17, 24, 39, 0.5);
+  backdrop-filter: blur(3px);
+}
+
+.modal-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.25rem 1.5rem 1rem;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.modal-close-btn {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  font-size: 1.1rem;
+  cursor: pointer;
+  color: var(--color-muted, #6b7280);
+  line-height: 1;
+  padding: 0.25rem;
+  border-radius: 6px;
+  transition: background 0.15s;
+}
+
+.modal-close-btn:hover {
+  background: var(--color-surface, #f3f4f6);
+}
+
+.modal-fields {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 0.6rem 1rem;
+  align-items: center;
+  padding: 1.2rem 1.5rem;
+}
+
+.modal-field-label {
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--color-muted, #6b7280);
+  text-align: right;
+}
+
+.modal-input,
+.modal-textarea {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--color-border, #d1d5db);
+  border-radius: 7px;
+  font-size: 0.9rem;
+  background: var(--color-background, #fff);
+  color: var(--color-text, #111827);
+  transition: border-color 0.15s, box-shadow 0.15s;
+  box-sizing: border-box;
+}
+
+.modal-textarea {
+  resize: vertical;
+  min-height: 72px;
+}
+
+.modal-input:focus,
+.modal-textarea:focus {
+  outline: none;
+  border-color: #818cf8;
+  box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.2);
+}
+
+.modal-footer {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+  padding: 1rem 1.5rem 1.25rem;
+  border-top: 1px solid var(--color-border, #e5e7eb);
+}
+
+/* ================================================================
+   PID Viewer Modal specifics
+   ================================================================ */
+.pid-modal-subtitle {
+  margin: 0.2rem 0 0;
+  font-size: 0.85rem;
+  color: var(--color-muted, #6b7280);
+}
+
+.pid-modal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.9rem 1.5rem;
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+  flex-wrap: wrap;
+}
+
+.pid-modal-toolbar .modal-input {
+  flex: 1;
+  min-width: 160px;
+}
+
+.pid-modal-count {
+  font-size: 0.82rem;
+  color: var(--color-muted, #6b7280);
+  white-space: nowrap;
+}
+
+.pid-chip-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 1rem 1.5rem 1.5rem;
+  max-height: 340px;
+  overflow-y: auto;
+  align-content: flex-start;
+}
+
+.pid-chip {
+  display: inline-block;
+  padding: 0.3rem 0.65rem;
+  border-radius: 20px;
+  background: #e0e7ff;
+  color: #3730a3;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  cursor: default;
+  user-select: text;
+}
+
+/* ================================================================
+   Frequency table: clickable PID count button
+   ================================================================ */
+.view-pids-btn {
+  background: none;
+  border: 1px solid #818cf8;
+  color: #4338ca;
+  padding: 0.15rem 0.5rem;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.view-pids-btn:hover {
+  background: #e0e7ff;
+}
+
+/* ================================================================
+   Tracking section minimise button
+   ================================================================ */
+.tracking-minimise-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.82rem;
+  padding: 0.3rem 0.75rem;
+  border-radius: 7px;
+  background: var(--color-surface, #f3f4f6);
+  border: 1px solid var(--color-border, #d1d5db);
+  cursor: pointer;
+  color: var(--color-muted, #6b7280);
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.tracking-minimise-btn:hover {
+  background: #e0e7ff;
+  border-color: #818cf8;
+  color: #3730a3;
+}
+
+.minimise-icon {
+  font-size: 0.7em;
+  line-height: 1;
+}
+
+/* ================================================================
+   Dataset row highlight (after PID chip click)
+   ================================================================ */
+@keyframes row-flash {
+  0%, 100% { background: transparent; }
+  20%, 60% { background: #fef08a; }
+}
+
+[data-dataset-row].row-highlight {
+  animation: row-flash 2.8s ease-in-out forwards;
+  outline: 2px solid #ca8a04;
+  outline-offset: -1px;
+  border-radius: 3px;
+}
+
+/* ================================================================
+   Clickable PID chips in viewer modal
+   ================================================================ */
+.pid-chip-clickable {
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, transform 0.1s;
+}
+
+.pid-chip-clickable:hover,
+.pid-chip-clickable:focus {
+  background: #818cf8;
+  color: #fff;
+  transform: scale(1.06);
+  outline: none;
+}
+
+.pid-chip-clickable:focus-visible {
+  outline: 2px solid #4338ca;
+  outline-offset: 2px;
+}
+
+/* hint text under the chip grid */
+.pid-modal-hint {
+  padding: 0 1.5rem 0.75rem;
+  font-size: 0.78rem;
+  color: var(--color-muted, #6b7280);
+  font-style: italic;
+}

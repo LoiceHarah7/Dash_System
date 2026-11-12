@@ -73,7 +73,11 @@
   <a class="back-link" href="{{ url_for('index') }}">← All studies</a>
   <section class="dashboard-heading">
     <div><p class="eyebrow">STUDY DASHBOARD</p><h1>{{ dataset.study_name }}</h1><p class="intro">{{ dataset.filename }} · Uploaded {{ dataset.uploaded_at.strftime('%b %d, %Y at %H:%M') }}{% if codebook %} · Codebook: {{ codebook.filename }}{% endif %}{% if saved_path %} · <span class="saved-path-chip" title="{{ saved_path }}">📂 {{ saved_path | truncate(50, True, '…') }}</span>{% endif %}</p></div>
-    <a class="button report-button" href="{{ url_for('download_report', dataset_id=dataset.id) }}"><span>↓</span> Download cleaning report &amp; data</a>
+    <div class="download-cluster" role="group" aria-label="Download options">
+      <a class="button report-button download-all-btn" href="{{ url_for('download_report', dataset_id=dataset.id) }}" title="Download all 3 sheets in one workbook (Cleaning Report, Cleaned Data, Codebook)"><span>↓</span> Download All (3 Sheets)</a>
+      <a class="button download-sub-button" href="{{ url_for('download_cleaned_data', dataset_id=dataset.id) }}" title="Download cleaned dataset only"><span>▤</span> Cleaned Data</a>
+      <a class="button download-sub-button" href="{{ url_for('download_cleaning_report_only', dataset_id=dataset.id) }}" title="Download cleaning report summary only"><span>⌗</span> Report Only</a>
+    </div>
   </section>
 
   {# ── Save-a-copy banner ─────────────────────────────────────────── #}
@@ -93,7 +97,9 @@
           <p>Paste the path to where you've saved this dataset file so you can find it quickly from the home page.</p>
         {% endif %}
         <div class="save-copy-actions">
-          <a class="button save-copy-download-btn" href="{{ url_for('download_report', dataset_id=dataset.id) }}">↓ Download cleaned data</a>
+          <a class="button save-copy-download-btn" href="{{ url_for('download_cleaned_data', dataset_id=dataset.id) }}">↓ Cleaned data</a>
+          <a class="button save-copy-download-btn" href="{{ url_for('download_report', dataset_id=dataset.id) }}">↓ All together (3 sheets)</a>
+          <a class="button save-copy-download-btn" href="{{ url_for('download_cleaning_report_only', dataset_id=dataset.id) }}">↓ Cleaning report</a>
           <form class="save-copy-form" method="post" action="{{ url_for('save_dataset_path', dataset_id=dataset.id) }}">
             <input class="save-copy-input" type="text" name="saved_path" placeholder="e.g. C:\Users\you\Documents\ESD-cleaned.xlsx" value="{{ saved_path or '' }}" maxlength="500" aria-label="Local file path">
             <button class="button save-copy-submit" type="submit">Save path</button>
@@ -123,6 +129,9 @@
       View potential missing PID numbers ({{ "{:,}".format(pid_sequence_gap_count) }})
     </button>
   {% endif %}
+  <a class="button pid-rows-toggle tracking-nav-jump" href="#tracking-section" id="tracking-nav-jump">
+    <span>📋</span> Participant Procedure Tracking (Lilongwe &amp; Salima)
+  </a>
 
   {% if pid_candidates %}
     <section class="missing-pid-records" id="pid-sequence-gaps" hidden>
@@ -188,7 +197,11 @@
       </div>
       <div class="table-wrap view-grouped"><table><thead><tr><th>Row</th>{% for column in dataset.column_names %}{% set is_sub = column in subcolumn_to_group %}<th class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}" data-column="{{ column }}">{{ column }}{% if column in grouped_categories %} <span class="col-group-indicator">Grouped</span>{% endif %}</th>{% endfor %}</tr></thead><tbody>
         {% for entry in all_pid_rows %}
-          <tr><td>{{ entry.index + 1 }}</td>{% for column in dataset.column_names %}{% set is_sub = column in subcolumn_to_group %}<td class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}"{% if column in label_maps %} data-label-column="{{ column }}" data-raw-value="{{ entry.record.get(column) }}"{% endif %}>{{ entry.record.get(column) if entry.record.get(column) is not none else "—" }}</td>{% endfor %}</tr>
+          <tr data-dataset-row="true"
+              data-primary-pid="{{ entry.primary_pid }}"
+              data-pids="{{ entry.pids|join(' ')|lower }}"
+              data-row-index="{{ entry.index + 1 }}">
+            <td>{{ entry.index + 1 }}</td>{% for column in dataset.column_names %}{% set is_sub = column in subcolumn_to_group %}<td class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}"{% if column in label_maps %} data-label-column="{{ column }}" data-raw-value="{{ entry.record.get(column) }}"{% endif %}>{{ entry.record.get(column) if entry.record.get(column) is not none else "—" }}</td>{% endfor %}</tr>
         {% endfor %}
       </tbody></table></div>
     </section>
@@ -256,6 +269,323 @@
     {% else %}
       <p class="duplicate-empty">No PID-like field was detected in this dataset, so duplicate review is unavailable.</p>
     {% endif %}
+  </section>
+
+  {# ── Procedure & Activity Tracking (Lilongwe & Salima) ───────────── #}
+  <section class="tracking-section" id="tracking-section">
+    <div class="section-heading tracking-header">
+      <div>
+        <p class="eyebrow">STUDY SITE ACTIVITY TRACKING</p>
+        <h2>Participant Procedure Tracking</h2>
+      </div>
+      <div class="tracking-top-actions">
+        <a class="button tracking-download-btn" id="btn-download-tracking" href="{{ url_for('download_tracking_sheet', dataset_id=dataset.id, site='lilongwe') }}" title="Download current tracking spreadsheet as Excel">
+          <span>↓</span> Download Tracking (.xlsx)
+        </a>
+        <button type="button" class="button tracking-upload-toggle-btn" id="btn-toggle-tracking-upload" aria-expanded="false">
+          <span>↑</span> Upload / Update Sheet
+        </button>
+        <button type="button" class="button tracking-minimise-btn" id="btn-minimise-tracking" aria-expanded="true" aria-controls="tracking-body" title="Minimise / expand this section">
+          <span class="minimise-icon">▲</span> Minimise
+        </button>
+      </div>
+    </div>
+
+    <div id="tracking-body">
+
+    <p class="tracking-intro-text">      Track participant completion across each study activity: <strong>Questionnaire</strong>, <strong>Dental exam</strong>, and <strong>Endoscopy (ENDO)</strong>. See exact reasons and clinical conditions documented when an activity was not performed.
+    </p>
+
+    <!-- Upload/Update drawer -->
+    <div class="tracking-upload-drawer" id="tracking-upload-drawer" hidden>
+      <form class="tracking-upload-form" method="post" action="{{ url_for('upload_tracking_sheet', dataset_id=dataset.id) }}" enctype="multipart/form-data">
+        <div class="drawer-header">
+          <strong>Upload Updated Tracking Document</strong>
+          <small class="muted">Upload an Excel (.xlsx, .xls) or CSV/TSV tracking sheet with columns: PID, QUESTIONEER, DENTAL, ENDO YES/NO, ENDO DATE, COMMENT</small>
+        </div>
+        <div class="tracking-upload-row">
+          <label class="field-label" for="tracking-site-select">Site:</label>
+          <select name="site" id="tracking-site-select" class="tracking-select">
+            <option value="Lilongwe">Lilongwe Site (ESD-01)</option>
+            <option value="Salima">Salima Site (ESD-02)</option>
+          </select>
+          <input type="file" name="tracking_file" id="tracking-file-input" accept=".xlsx,.xls,.csv,.tsv" required class="tracking-file-input">
+          <button type="submit" class="button primary tracking-submit-btn">Upload &amp; Replace Tracking</button>
+          <button type="button" class="button tracking-cancel-btn" id="btn-cancel-tracking-upload">Cancel</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Site Tabs: Lilongwe vs Salima -->
+    <div class="tracking-site-tabs" role="tablist" aria-label="Site Tracking Tabs">
+      <button type="button" class="tracking-site-tab active" data-site-target="lilongwe" role="tab" aria-selected="true" id="tab-lilongwe">
+        <span class="tab-icon">🏥</span> Lilongwe Site (ESD-01)
+        <span class="tab-count-badge">{{ lilongwe_tracking.total }} tracked</span>
+      </button>
+      <button type="button" class="tracking-site-tab" data-site-target="salima" role="tab" aria-selected="false" id="tab-salima">
+        <span class="tab-icon">🏥</span> Salima Site (ESD-02)
+        <span class="tab-count-badge">{{ salima_tracking.total }} tracked</span>
+      </button>
+    </div>
+
+    {# ── Lilongwe Site Panel ── #}
+    <div class="tracking-site-pane active" id="pane-lilongwe" role="tabpanel" aria-labelledby="tab-lilongwe">
+      <div class="tracking-kpi-grid">
+        <div class="tracking-kpi-card">
+          <span class="kpi-label">Total Lilongwe PIDs</span>
+          <strong class="kpi-value">{{ "{:,}".format(lilongwe_tracking.total) }}</strong>
+          <small class="kpi-desc">Tracked participants</small>
+        </div>
+        <div class="tracking-kpi-card kpi-card-green">
+          <span class="kpi-label">Questionnaire</span>
+          <strong class="kpi-value">{{ "{:,}".format(lilongwe_tracking.questionnaire_count) }}</strong>
+          <small class="kpi-desc">{{ lilongwe_tracking.questionnaire_pct }}% completed</small>
+        </div>
+        <div class="tracking-kpi-card kpi-card-teal">
+          <span class="kpi-label">Dental Exam</span>
+          <strong class="kpi-value">{{ "{:,}".format(lilongwe_tracking.dental_count) }}</strong>
+          <small class="kpi-desc">{{ lilongwe_tracking.dental_pct }}% completed</small>
+        </div>
+        <div class="tracking-kpi-card kpi-card-purple">
+          <span class="kpi-label">ENDO Done (YES)</span>
+          <strong class="kpi-value">{{ "{:,}".format(lilongwe_tracking.endo_yes_count) }}</strong>
+          <small class="kpi-desc">{{ lilongwe_tracking.endo_yes_pct }}% performed</small>
+        </div>
+        <div class="tracking-kpi-card kpi-card-amber">
+          <span class="kpi-label">ENDO Not Done (NO)</span>
+          <strong class="kpi-value">{{ "{:,}".format(lilongwe_tracking.endo_no_count) }}</strong>
+          <small class="kpi-desc">{{ lilongwe_tracking.endo_no_pct }}% declined/contraindicated</small>
+        </div>
+        <div class="tracking-kpi-card kpi-card-grey">
+          <span class="kpi-label">Pending / Scheduled</span>
+          <strong class="kpi-value">{{ "{:,}".format(lilongwe_tracking.endo_pending_count) }}</strong>
+          <small class="kpi-desc">{{ lilongwe_tracking.endo_pending_pct }}% awaiting</small>
+        </div>
+      </div>
+
+      {% if lilongwe_tracking.reasons %}
+      <div class="tracking-reasons-container">
+        <span class="reasons-heading">Non-completion reasons &amp; clinical findings (click to filter):</span>
+        <div class="reasons-pills-wrap">
+          {% for item in lilongwe_tracking.reasons %}
+            <button type="button" class="reason-filter-pill" data-reason-val="{{ item.reason }}" title="Filter rows by '{{ item.reason }}'">
+              <span class="reason-pill-text">{{ item.reason }}</span>
+              <span class="reason-pill-count">{{ item.count }}</span>
+            </button>
+          {% endfor %}
+          <button type="button" class="reason-clear-pill" title="Reset filter" hidden>✕ Clear reason filter</button>
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="tracking-filter-toolbar">
+        <div class="tracking-search-box">
+          <span class="search-ico">🔍</span>
+          <input type="search" class="tracking-filter-input" placeholder="Search Lilongwe PID, date, or comment..." aria-label="Search Lilongwe tracking rows">
+        </div>
+        <div class="tracking-filter-btns" role="group" aria-label="Filter status">
+          <button type="button" class="button tracking-filter-btn active" data-filter="all">All ({{ lilongwe_tracking.total }})</button>
+          <button type="button" class="button tracking-filter-btn" data-filter="yes">✓ ENDO: YES ({{ lilongwe_tracking.endo_yes_count }})</button>
+          <button type="button" class="button tracking-filter-btn" data-filter="no">✕ ENDO: NO ({{ lilongwe_tracking.endo_no_count }})</button>
+          <button type="button" class="button tracking-filter-btn" data-filter="pending">⏳ Pending ({{ lilongwe_tracking.endo_pending_count }})</button>
+          <button type="button" class="button tracking-filter-btn" data-filter="comment">💬 Has Comment</button>
+        </div>
+      </div>
+
+      <div class="table-wrap tracking-table-wrap">
+        <table class="tracking-table">
+          <thead>
+            <tr>
+              <th style="width: 50px;">#</th>
+              <th>PID</th>
+              <th>Questionnaire</th>
+              <th>Dental</th>
+              <th>Endoscopy (ENDO)</th>
+              <th>ENDO Date</th>
+              <th>Comment / Reason</th>
+              <th>Cleaned Dataset</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in lilongwe_tracking.rows %}
+              <tr data-endo="{{ r.endo_status|lower }}" data-comment="{{ r.comment|lower }}" data-pid="{{ r.pid|lower }}" data-search-blob="{{ r.pid|lower }} {{ r.comment|lower }} {{ r.questionnaire_date|lower }} {{ r.dental_date|lower }} {{ r.endo_date|lower }}">
+                <td>{{ loop.index }}</td>
+                <td><strong>{{ r.pid }}</strong></td>
+                <td>{{ r.questionnaire_date }}</td>
+                <td>{{ r.dental_date }}</td>
+                <td>
+                  {% if r.endo_status == "YES" %}
+                    <span class="status-badge badge-yes">✓ YES</span>
+                  {% elif r.endo_status == "NO" %}
+                    <span class="status-badge badge-no">✕ NO</span>
+                  {% else %}
+                    <span class="status-badge badge-pending">⏳ PENDING</span>
+                  {% endif %}
+                </td>
+                <td>{{ r.endo_date }}</td>
+                <td class="tracking-comment-col">
+                  {% if r.comment %}
+                    <span class="reason-highlight">{{ r.comment }}</span>
+                  {% else %}
+                    <span class="muted">—</span>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if r.in_dataset %}
+                    <span class="badge-dataset-in" title="PID is present in the cleaned study records">✓ In Dataset</span>
+                  {% else %}
+                    <span class="badge-dataset-out" title="PID is in tracking list but not in uploaded questionnaire dataset">Missing in Data</span>
+                  {% endif %}
+                </td>
+                <td class="tracking-actions-col">
+                  <button type="button" class="button edit-tracking-btn"
+                    data-id="{{ r.id }}"
+                    data-pid="{{ r.pid }}"
+                    data-q="{{ r.questionnaire_date }}"
+                    data-dental="{{ r.dental_date }}"
+                    data-endo="{{ r.endo_status }}"
+                    data-endo-date="{{ r.endo_date }}"
+                    data-comment="{{ r.comment }}"
+                    data-action="{{ url_for('edit_tracking_row', dataset_id=dataset.id) }}"
+                    title="Edit this row">✏️ Edit</button>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    {# ── Salima Site Panel ── #}
+    <div class="tracking-site-pane" id="pane-salima" role="tabpanel" aria-labelledby="tab-salima" hidden>
+      <div class="tracking-kpi-grid">
+        <div class="tracking-kpi-card">
+          <span class="kpi-label">Total Salima PIDs</span>
+          <strong class="kpi-value">{{ "{:,}".format(salima_tracking.total) }}</strong>
+          <small class="kpi-desc">Tracked participants</small>
+        </div>
+        <div class="tracking-kpi-card kpi-card-green">
+          <span class="kpi-label">Questionnaire</span>
+          <strong class="kpi-value">{{ "{:,}".format(salima_tracking.questionnaire_count) }}</strong>
+          <small class="kpi-desc">{{ salima_tracking.questionnaire_pct }}% completed</small>
+        </div>
+        <div class="tracking-kpi-card kpi-card-teal">
+          <span class="kpi-label">Dental Exam</span>
+          <strong class="kpi-value">{{ "{:,}".format(salima_tracking.dental_count) }}</strong>
+          <small class="kpi-desc">{{ salima_tracking.dental_pct }}% completed</small>
+        </div>
+        <div class="tracking-kpi-card kpi-card-purple">
+          <span class="kpi-label">ENDO Done (YES)</span>
+          <strong class="kpi-value">{{ "{:,}".format(salima_tracking.endo_yes_count) }}</strong>
+          <small class="kpi-desc">{{ salima_tracking.endo_yes_pct }}% performed</small>
+        </div>
+        <div class="tracking-kpi-card kpi-card-amber">
+          <span class="kpi-label">ENDO Not Done (NO)</span>
+          <strong class="kpi-value">{{ "{:,}".format(salima_tracking.endo_no_count) }}</strong>
+          <small class="kpi-desc">{{ salima_tracking.endo_no_pct }}% declined/contraindicated</small>
+        </div>
+        <div class="tracking-kpi-card kpi-card-grey">
+          <span class="kpi-label">Pending / Scheduled</span>
+          <strong class="kpi-value">{{ "{:,}".format(salima_tracking.endo_pending_count) }}</strong>
+          <small class="kpi-desc">{{ salima_tracking.endo_pending_pct }}% awaiting</small>
+        </div>
+      </div>
+
+      {% if salima_tracking.reasons %}
+      <div class="tracking-reasons-container">
+        <span class="reasons-heading">Non-completion reasons &amp; clinical findings (click to filter):</span>
+        <div class="reasons-pills-wrap">
+          {% for item in salima_tracking.reasons %}
+            <button type="button" class="reason-filter-pill" data-reason-val="{{ item.reason }}" title="Filter rows by '{{ item.reason }}'">
+              <span class="reason-pill-text">{{ item.reason }}</span>
+              <span class="reason-pill-count">{{ item.count }}</span>
+            </button>
+          {% endfor %}
+          <button type="button" class="reason-clear-pill" title="Reset filter" hidden>✕ Clear reason filter</button>
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="tracking-filter-toolbar">
+        <div class="tracking-search-box">
+          <span class="search-ico">🔍</span>
+          <input type="search" class="tracking-filter-input" placeholder="Search Salima PID, date, or comment..." aria-label="Search Salima tracking rows">
+        </div>
+        <div class="tracking-filter-btns" role="group" aria-label="Filter status">
+          <button type="button" class="button tracking-filter-btn active" data-filter="all">All ({{ salima_tracking.total }})</button>
+          <button type="button" class="button tracking-filter-btn" data-filter="yes">✓ ENDO: YES ({{ salima_tracking.endo_yes_count }})</button>
+          <button type="button" class="button tracking-filter-btn" data-filter="no">✕ ENDO: NO ({{ salima_tracking.endo_no_count }})</button>
+          <button type="button" class="button tracking-filter-btn" data-filter="pending">⏳ Pending ({{ salima_tracking.endo_pending_count }})</button>
+          <button type="button" class="button tracking-filter-btn" data-filter="comment">💬 Has Comment</button>
+        </div>
+      </div>
+
+      <div class="table-wrap tracking-table-wrap">
+        <table class="tracking-table">
+          <thead>
+            <tr>
+              <th style="width: 50px;">#</th>
+              <th>PID</th>
+              <th>Questionnaire</th>
+              <th>Dental</th>
+              <th>Endoscopy (ENDO)</th>
+              <th>ENDO Date</th>
+              <th>Comment / Reason</th>
+              <th>Cleaned Dataset</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in salima_tracking.rows %}
+              <tr data-endo="{{ r.endo_status|lower }}" data-comment="{{ r.comment|lower }}" data-pid="{{ r.pid|lower }}" data-search-blob="{{ r.pid|lower }} {{ r.comment|lower }} {{ r.questionnaire_date|lower }} {{ r.dental_date|lower }} {{ r.endo_date|lower }}">
+                <td>{{ loop.index }}</td>
+                <td><strong>{{ r.pid }}</strong></td>
+                <td>{{ r.questionnaire_date }}</td>
+                <td>{{ r.dental_date }}</td>
+                <td>
+                  {% if r.endo_status == "YES" %}
+                    <span class="status-badge badge-yes">✓ YES</span>
+                  {% elif r.endo_status == "NO" %}
+                    <span class="status-badge badge-no">✕ NO</span>
+                  {% else %}
+                    <span class="status-badge badge-pending">⏳ PENDING</span>
+                  {% endif %}
+                </td>
+                <td>{{ r.endo_date }}</td>
+                <td class="tracking-comment-col">
+                  {% if r.comment %}
+                    <span class="reason-highlight">{{ r.comment }}</span>
+                  {% else %}
+                    <span class="muted">—</span>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if r.in_dataset %}
+                    <span class="badge-dataset-in" title="PID is present in the cleaned study records">✓ In Dataset</span>
+                  {% else %}
+                    <span class="badge-dataset-out" title="PID is in tracking list but not in uploaded questionnaire dataset">Missing in Data</span>
+                  {% endif %}
+                </td>
+                <td class="tracking-actions-col">
+                  <button type="button" class="button edit-tracking-btn"
+                    data-id="{{ r.id }}"
+                    data-pid="{{ r.pid }}"
+                    data-q="{{ r.questionnaire_date }}"
+                    data-dental="{{ r.dental_date }}"
+                    data-endo="{{ r.endo_status }}"
+                    data-endo-date="{{ r.endo_date }}"
+                    data-comment="{{ r.comment }}"
+                    data-action="{{ url_for('edit_tracking_row', dataset_id=dataset.id) }}"
+                    title="Edit this row">✏️ Edit</button>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    </div>{# end tracking-body #}
   </section>
 
   <section class="charts-section">
@@ -367,7 +697,7 @@
       <span class="muted table-mode-caption">Sub-columns are consolidated into category groups. Switch to "Show all columns" to view raw individual variables.</span>
     </div>
     <div class="table-wrap view-grouped"><table><thead><tr><th>Row</th>{% for column in dataset.column_names %}{% set is_sub = column in subcolumn_to_group %}<th class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}" data-column="{{ column }}">{{ column }}{% if column in grouped_categories %} <span class="col-group-indicator">Grouped</span>{% endif %}</th>{% endfor %}</tr></thead><tbody>
-      {% for row in preview %}<tr><td>{{ loop.index }}</td>{% for column in dataset.column_names %}{% set is_sub = column in subcolumn_to_group %}<td class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}"{% if column in label_maps %} data-label-column="{{ column }}" data-raw-value="{{ row[column] }}"{% endif %}>{{ row[column] if row[column] is not none else "—" }}</td>{% endfor %}</tr>{% endfor %}
+      {% for row in preview %}<tr data-dataset-row="true" data-primary-pid="{% for col in pid_candidates %}{% if row[col] and row[col] != None %}{{ row[col] }}{% endif %}{% endfor %}"><td>{{ loop.index }}</td>{% for column in dataset.column_names %}{% set is_sub = column in subcolumn_to_group %}<td class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}"{% if column in label_maps %} data-label-column="{{ column }}" data-raw-value="{{ row[column] }}"{% endif %}>{{ row[column] if row[column] is not none else "—" }}</td>{% endfor %}</tr>{% endfor %}
     </tbody></table></div>
   </section>
 
@@ -386,4 +716,62 @@
       }
     })();
   </script>
+
+  {# ── Tracking Edit Modal ── #}
+  <dialog id="tracking-edit-modal" class="dash-modal" aria-labelledby="tracking-edit-modal-title">
+    <div class="modal-inner">
+      <div class="modal-header">
+        <h3 id="tracking-edit-modal-title">✏️ Edit Tracking Record — <span id="edit-modal-pid"></span></h3>
+        <button type="button" class="modal-close-btn" id="tracking-edit-close" aria-label="Close">✕</button>
+      </div>
+      <form id="tracking-edit-form" method="post" action="">
+        <input type="hidden" name="row_id" id="edit-row-id">
+        <div class="modal-fields">
+          <label class="modal-field-label" for="edit-q-date">Questionnaire Date</label>
+          <input type="text" id="edit-q-date" name="questionnaire_date" class="modal-input" placeholder="e.g. 23/02/2024">
+
+          <label class="modal-field-label" for="edit-dental-date">Dental Date</label>
+          <input type="text" id="edit-dental-date" name="dental_date" class="modal-input" placeholder="e.g. 23/02/2024">
+
+          <label class="modal-field-label" for="edit-endo-status">ENDO Status</label>
+          <select id="edit-endo-status" name="endo_status" class="modal-input">
+            <option value="">— Pending / Not set —</option>
+            <option value="YES">YES</option>
+            <option value="NO">NO</option>
+          </select>
+
+          <label class="modal-field-label" for="edit-endo-date">ENDO Date</label>
+          <input type="text" id="edit-endo-date" name="endo_date" class="modal-input" placeholder="e.g. 24-Feb-24">
+
+          <label class="modal-field-label" for="edit-comment">Comment / Reason</label>
+          <textarea id="edit-comment" name="comment" class="modal-textarea" rows="3" placeholder="e.g. Could not tolerate scope"></textarea>
+        </div>
+        <div class="modal-footer">
+          <button type="submit" class="button primary">Save Changes</button>
+          <button type="button" class="button" id="tracking-edit-cancel">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+
+  {# ── PID Viewer Modal ── #}
+  <dialog id="pid-viewer-modal" class="dash-modal" aria-labelledby="pid-viewer-modal-title">
+    <div class="modal-inner">
+      <div class="modal-header">
+        <div>
+          <h3 id="pid-viewer-modal-title">👥 PIDs in this category</h3>
+          <p class="pid-modal-subtitle" id="pid-modal-subtitle"></p>
+        </div>
+        <button type="button" class="modal-close-btn" id="pid-viewer-close" aria-label="Close">✕</button>
+      </div>
+      <div class="pid-modal-toolbar">
+        <input type="search" id="pid-modal-search" class="modal-input" placeholder="Search PIDs…" autocomplete="off">
+        <span class="pid-modal-count" id="pid-modal-count"></span>
+        <button type="button" class="button" id="pid-modal-copy">📋 Copy all</button>
+      </div>
+      <div class="pid-chip-grid" id="pid-chip-grid" aria-live="polite"></div>
+      <p class="pid-modal-hint">💡 Click any PID to jump to its row in the dataset view below.</p>
+    </div>
+  </dialog>
+
 {% endblock %}

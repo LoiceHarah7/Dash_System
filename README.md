@@ -47,6 +47,17 @@ Run the focused upload and dashboard tests with:
   - **Duplicate Review Comparison**: Supports toggling grouped vs all columns when comparing differing duplicate records side-by-side.
 - Multi-response option codes map automatically to codebook response choices (including bilingual English and Chichewa labels), even when option codes are formatted as scientific notation (`1E+1`) or decimal integers (`10.0`). Missing cells are preserved and not counted as selections; numeric zero indicates unselected.
 - The plain base column is consolidated with its option sub-columns in grouped mode to avoid duplicate redundant charts, but remains fully viewable in all-columns mode.
+- **Separate and combined download options**:
+  - **Download All (3 Sheets)**: Combined Excel workbook containing the Cleaning Report, Cleaned Data, bilingual Codebook, and Response List mappings.
+  - **Cleaned Data Only**: Standalone Excel workbook containing only the cleaned dataset spreadsheet.
+  - **Cleaning Report Only**: Standalone Excel workbook containing the cleaning report summary, steps, codebook, and mappings without data rows.
+- **Participant Procedure & Activity Tracking (Lilongwe & Salima)**:
+  - Interactive tracking section for Lilongwe (`ESD-01`) and Salima (`ESD-02`) study sites.
+  - Monitors completion across **Questionnaire**, **Dental examination**, and **Endoscopy (ENDO)** procedures.
+  - Visual summary of clinical reasons and non-completion findings (e.g. *Refused further participation*, *High Blood Pressure*, *Esophageal Varices*, *Esophageal Tumor*, *Could not tolerate scope*, etc.) with interactive pill cloud filtering.
+  - Real-time text search and status filter buttons (`All`, `ENDO: YES`, `ENDO: NO`, `Pending`, `Has Comment`).
+  - Cross-references tracking PIDs against uploaded questionnaire dataset records with `In Dataset` and `Missing in Data` status badges.
+  - Allows downloading current tracking sheets as `.xlsx` and uploading updated tracking files anytime.
 - PID/submission/instance/device identifiers, administrative metadata, notes/comments, and `other_...` free-text fields are omitted from default charts. The Flask log prints detected question groups and their columns for verification.
 - The report workbook includes the cleaning report, cleaned data, bilingual response-list codebook, and saved response-list mappings. Codebooks using the older `Variable`, `Value`, and `Value label` format are still accepted for compatibility.
 - Removes completely empty rows and columns. Exact duplicate rows are retained for PID-based review rather than dropped automatically.

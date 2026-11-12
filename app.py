@@ -70,6 +70,20 @@ class StudyCodebook(db.Model):
     unmatched_variables = db.Column(db.JSON, nullable=False)
 
 
+class ParticipantTracking(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    dataset_id = db.Column(
+        db.Integer, db.ForeignKey("study_dataset.id"), nullable=True, index=True
+    )
+    site = db.Column(db.String(50), nullable=False, default="Lilongwe", index=True)
+    pid = db.Column(db.String(100), nullable=False, index=True)
+    questionnaire_date = db.Column(db.String(100), nullable=True)
+    dental_date = db.Column(db.String(100), nullable=True)
+    endo_status = db.Column(db.String(50), nullable=True)
+    endo_date = db.Column(db.String(100), nullable=True)
+    comment = db.Column(db.String(500), nullable=True)
+
+
 def make_unique_headers(headers):
     used = set()
     result = []
@@ -511,7 +525,15 @@ def multiselect_labels(question, columns, codebook):
     return english, chichewa, list_name
 
 
-def categorical_chart_variant(labels, labels_en, labels_ny, values, category_count=None, codes=None):
+def categorical_chart_variant(
+    labels,
+    labels_en,
+    labels_ny,
+    values,
+    category_count=None,
+    codes=None,
+    pids=None,
+):
     category_count = category_count if category_count is not None else len(labels)
     if 2 <= category_count <= 3:
         chart_type, chart_label = "pie", "Pie chart"
@@ -530,6 +552,8 @@ def categorical_chart_variant(labels, labels_en, labels_ny, values, category_cou
     }
     if codes is not None:
         variant["codes"] = codes
+    if pids is not None:
+        variant["pids"] = pids
     return variant
 
 
@@ -744,9 +768,31 @@ def codebook_labels(codebook, column):
     return codebook.get("lists", {}).get(list_name, {}) if list_name else {}
 
 
+def extract_row_pids(frame):
+    pid_cols = detect_pid_columns(frame.columns)
+    pids = []
+    for idx, row in frame.iterrows():
+        pid_val = None
+        for col in pid_cols:
+            val = row.get(col)
+            if val is not None and str(val).strip() and str(val).strip().lower() != "nan":
+                pid_val = str(val).strip()
+                break
+        pids.append(pid_val if pid_val else f"Row {idx + 1}")
+    return pd.Series(pids, index=frame.index)
+
+
 def build_single_column_chart(
-    column, frame, variable_lists, response_lists, coded_columns, description=""
+    column,
+    frame,
+    variable_lists,
+    response_lists,
+    coded_columns,
+    description="",
+    row_pids=None,
 ):
+    if row_pids is None:
+        row_pids = extract_row_pids(frame)
     values = frame[column].dropna()
     if values.empty:
         return None
@@ -776,6 +822,11 @@ def build_single_column_chart(
             or f"Unlabelled ({code})"
             for code in category_codes
         ]
+        pids_per_category = []
+        for code in category_codes:
+            cat_indices = codes[codes == code].index
+            pids_per_category.append(row_pids.loc[cat_indices].tolist())
+
         variants = [
             categorical_chart_variant(
                 ordered_english,
@@ -784,6 +835,7 @@ def build_single_column_chart(
                 frequencies.tolist(),
                 category_count=values.nunique(),
                 codes=category_codes,
+                pids=pids_per_category,
             )
         ]
         return {
@@ -809,6 +861,11 @@ def build_single_column_chart(
             f"{edges[index]:g}–{edges[index + 1]:g}"
             for index in range(len(edges) - 1)
         ]
+        pids_per_bin = []
+        for cat in counts.cat.categories:
+            bin_indices = counts[counts == cat].index
+            pids_per_bin.append(row_pids.loc[bin_indices].tolist())
+
         return {
             "name": column,
             "description": description,
@@ -821,6 +878,7 @@ def build_single_column_chart(
                     "labels_en": labels,
                     "labels_ny": labels,
                     "values": [int(value) for value in histogram.tolist()],
+                    "pids": pids_per_bin,
                 }
             ],
             "summary": (
@@ -842,6 +900,11 @@ def build_single_column_chart(
             date_values = parsed_dates.dropna()
             periods = date_values.dt.tz_localize(None).dt.to_period("M").astype(str)
             frequencies = periods.value_counts().sort_index().tail(18)
+            pids_per_period = []
+            for period in frequencies.index:
+                period_indices = periods[periods == period].index
+                pids_per_period.append(row_pids.loc[period_indices].tolist())
+
             return {
                 "name": column,
                 "description": description,
@@ -854,6 +917,7 @@ def build_single_column_chart(
                         "labels_en": frequencies.index.tolist(),
                         "labels_ny": frequencies.index.tolist(),
                         "values": [int(value) for value in frequencies.tolist()],
+                        "pids": pids_per_period,
                     }
                 ],
                 "summary": (
@@ -863,6 +927,11 @@ def build_single_column_chart(
             }
 
         frequencies = raw_values.value_counts().head(10)
+        pids_per_cat = []
+        for cat in frequencies.index:
+            cat_indices = raw_values[raw_values == cat].index
+            pids_per_cat.append(row_pids.loc[cat_indices].tolist())
+
         variants = [
             categorical_chart_variant(
                 frequencies.index.tolist(),
@@ -870,6 +939,7 @@ def build_single_column_chart(
                 frequencies.index.tolist(),
                 frequencies.tolist(),
                 category_count=raw_values.nunique(),
+                pids=pids_per_cat,
             )
         ]
         return {
@@ -898,6 +968,7 @@ def dashboard_data(dataset, codebook=None):
         dataset.id,
         question_groups,
     )
+    row_pids = extract_row_pids(frame)
     charts = []
     for question_name, question_columns in question_groups.items():
         if len(question_columns) > 1:
@@ -913,6 +984,11 @@ def dashboard_data(dataset, codebook=None):
             )
             total_selections = int(counts.sum())
             participants_with_selections = int(selected.any(axis=1).sum())
+            # Compute PIDs per choice for grouped bar chart
+            pids_per_choice = [
+                row_pids.loc[selected[col][selected[col]].index].tolist()
+                for col in question_columns
+            ]
             charts.append(
                 {
                     "name": question_name,
@@ -932,6 +1008,7 @@ def dashboard_data(dataset, codebook=None):
                             "labels_en": english_labels,
                             "labels_ny": chichewa_labels,
                             "values": [int(value) for value in counts.tolist()],
+                            "pids": pids_per_choice,
                         }
                     ],
                     "summary": (
@@ -956,6 +1033,8 @@ def dashboard_data(dataset, codebook=None):
                     if len(sub_series) > 0
                     else 0
                 )
+                selected_pids = row_pids.loc[sub_series[sub_series].index].tolist()
+                unselected_pids = row_pids.loc[sub_series[~sub_series].index].tolist()
                 charts.append(
                     {
                         "name": sub_col,
@@ -984,6 +1063,7 @@ def dashboard_data(dataset, codebook=None):
                                     f"Zosasankhidwa ({unselected_cnt:,})",
                                 ],
                                 "values": [selected_cnt, unselected_cnt],
+                                "pids": [selected_pids, unselected_pids],
                             }
                         ],
                         "summary": (
@@ -1002,6 +1082,7 @@ def dashboard_data(dataset, codebook=None):
                     response_lists,
                     coded_columns,
                     description="Raw question column",
+                    row_pids=row_pids,
                 )
                 if base_chart:
                     base_chart["is_grouped"] = False
@@ -1013,7 +1094,8 @@ def dashboard_data(dataset, codebook=None):
 
         column = question_columns[0]
         chart = build_single_column_chart(
-            column, frame, variable_lists, response_lists, coded_columns
+            column, frame, variable_lists, response_lists, coded_columns,
+            row_pids=row_pids,
         )
         if chart:
             chart["is_grouped"] = False
@@ -1172,6 +1254,217 @@ def build_report(dataset):
     return output, download_name
 
 
+def build_cleaned_data_workbook(dataset):
+    output = io.BytesIO()
+    cleaned_data = pd.DataFrame(dataset.records, columns=dataset.column_names)
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "-", dataset.study_name).strip("-")
+    download_name = f"{safe_name or 'study'}-cleaned-data-{dataset.id}.xlsx"
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        cleaned_data.to_excel(writer, sheet_name="Cleaned data", index=False)
+    output.seek(0)
+    return output, download_name
+
+
+def build_cleaning_report_only_workbook(dataset):
+    output = io.BytesIO()
+    codebook = db.session.get(StudyCodebook, dataset.id)
+    summary_rows = [
+        ("Study", dataset.study_name),
+        ("Source file", dataset.filename),
+        ("Uploaded", dataset.uploaded_at.strftime("%Y-%m-%d %H:%M UTC")),
+        ("Rows in cleaned output", dataset.rows),
+        ("Columns in cleaned output", dataset.columns),
+        ("Duplicate rows removed automatically", dataset.duplicates_removed),
+        ("Duplicate PID groups reviewed", "See dashboard duplicate review"),
+        ("Missing values filled", dataset.missing_values_filled),
+    ]
+    if codebook:
+        summary_rows.extend(
+            [
+                ("Codebook file", codebook.filename),
+                (
+                    "Unresolved coded variables",
+                    ", ".join(codebook.unmatched_variables) or "None",
+                ),
+                (
+                    "Codebook review warnings",
+                    " | ".join(codebook.variables.get("warnings", [])) or "None",
+                ),
+            ]
+        )
+    summary = pd.DataFrame(summary_rows, columns=["Cleaning report", "Result"])
+    steps = pd.DataFrame(
+        [
+            (
+                "Empty rows and columns",
+                "Removed rows and columns that contained no values.",
+            ),
+            (
+                "Duplicate rows",
+                "No rows were removed automatically. Review matching PIDs on the dashboard.",
+            ),
+            ("Missing values", (
+                "Filled continuous numeric columns with their median. Filled text "
+                "and codebook-coded categorical columns with their most frequent "
+                "value."
+            )),
+            ("Output", "Cleaned data is available in the separate Cleaned Data download."),
+        ],
+        columns=["Cleaning step", "Action"],
+    )
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "-", dataset.study_name).strip("-")
+    download_name = f"{safe_name or 'study'}-cleaning-report-summary-{dataset.id}.xlsx"
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        summary.to_excel(writer, sheet_name="Cleaning report", index=False)
+        steps.to_excel(
+            writer, sheet_name="Cleaning report", index=False, startrow=len(summary) + 2
+        )
+        if codebook:
+            codebook_rows = []
+            variable_lists = codebook.variables.get("variable_lists", {})
+            for list_name, choices in codebook.variables.get("lists", {}).items():
+                mapped_variables = [
+                    column
+                    for column, selected_list in variable_lists.items()
+                    if selected_list == list_name
+                ]
+                for value, labels in choices.items():
+                    codebook_rows.append(
+                        (
+                            list_name,
+                            value,
+                            labels.get("en", ""),
+                            labels.get("ny", ""),
+                            ", ".join(mapped_variables),
+                        )
+                    )
+            pd.DataFrame(
+                codebook_rows,
+                columns=[
+                    "list_name",
+                    "name",
+                    "label::English",
+                    "label::Chichewa",
+                    "matched dataset variables",
+                ],
+            ).to_excel(writer, sheet_name="Codebook", index=False)
+            pd.DataFrame(
+                [
+                    (column, list_name)
+                    for column, list_name in variable_lists.items()
+                ],
+                columns=["Dataset variable", "Response list"],
+            ).to_excel(writer, sheet_name="Response list mappings", index=False)
+    output.seek(0)
+    return output, download_name
+
+
+def get_or_seed_tracking(dataset_id, site):
+    site_name = "Salima" if str(site).lower() == "salima" else "Lilongwe"
+    records = (
+        ParticipantTracking.query.filter_by(dataset_id=dataset_id, site=site_name)
+        .order_by(ParticipantTracking.pid)
+        .all()
+    )
+    if not records:
+        try:
+            import tracking_data
+            if site_name == "Lilongwe":
+                seed = tracking_data.get_default_lilongwe_tracking()
+            else:
+                seed = tracking_data.get_default_salima_tracking()
+            new_objs = [
+                ParticipantTracking(
+                    dataset_id=dataset_id,
+                    site=site_name,
+                    pid=r["pid"],
+                    questionnaire_date=r.get("questionnaire_date"),
+                    dental_date=r.get("dental_date"),
+                    endo_status=r.get("endo_status"),
+                    endo_date=r.get("endo_date"),
+                    comment=r.get("comment"),
+                )
+                for r in seed
+            ]
+            db.session.bulk_save_objects(new_objs)
+            db.session.commit()
+            records = (
+                ParticipantTracking.query.filter_by(
+                    dataset_id=dataset_id, site=site_name
+                )
+                .order_by(ParticipantTracking.pid)
+                .all()
+            )
+        except Exception:
+            db.session.rollback()
+            app.logger.exception("Could not auto-seed tracking records")
+    return records
+
+
+def compile_tracking_summary(records, observed_pids_set):
+    total = len(records)
+    q_done = sum(
+        1 for r in records if r.questionnaire_date and str(r.questionnaire_date).strip()
+    )
+    d_done = sum(1 for r in records if r.dental_date and str(r.dental_date).strip())
+    endo_yes = sum(1 for r in records if (r.endo_status or "").upper() == "YES")
+    endo_no = sum(1 for r in records if (r.endo_status or "").upper() == "NO")
+    endo_pending = total - endo_yes - endo_no
+
+    reasons_map = {}
+    for r in records:
+        comm = (r.comment or "").strip()
+        if comm:
+            reasons_map[comm] = reasons_map.get(comm, 0) + 1
+        elif (r.endo_status or "").upper() == "NO":
+            reasons_map["Not Reported / Unspecified"] = (
+                reasons_map.get("Not Reported / Unspecified", 0) + 1
+            )
+
+    reasons_sorted = sorted(
+        [{"reason": k, "count": v} for k, v in reasons_map.items()],
+        key=lambda x: -x["count"],
+    )
+
+    rows = []
+    for r in records:
+        clean_pid = str(r.pid).strip()
+        norm_pid = re.sub(r"[^A-Za-z0-9]", "", clean_pid).casefold()
+        in_dataset = (clean_pid in observed_pids_set) or (
+            norm_pid in observed_pids_set
+        )
+        rows.append(
+            {
+                "id": r.id,
+                "pid": r.pid,
+                "questionnaire_date": r.questionnaire_date or "—",
+                "dental_date": r.dental_date or "—",
+                "endo_status": (r.endo_status or "").upper()
+                if r.endo_status
+                else "PENDING",
+                "endo_date": r.endo_date or "—",
+                "comment": r.comment or "",
+                "in_dataset": in_dataset,
+            }
+        )
+
+    return {
+        "total": total,
+        "questionnaire_count": q_done,
+        "questionnaire_pct": round(q_done / total * 100, 1) if total else 0,
+        "dental_count": d_done,
+        "dental_pct": round(d_done / total * 100, 1) if total else 0,
+        "endo_yes_count": endo_yes,
+        "endo_yes_pct": round(endo_yes / total * 100, 1) if total else 0,
+        "endo_no_count": endo_no,
+        "endo_no_pct": round(endo_no / total * 100, 1) if total else 0,
+        "endo_pending_count": endo_pending,
+        "endo_pending_pct": round(endo_pending / total * 100, 1) if total else 0,
+        "reasons": reasons_sorted,
+        "rows": rows,
+    }
+
+
 @app.route("/", methods=["GET"])
 def index():
     datasets = StudyDataset.query.order_by(desc(StudyDataset.uploaded_at)).all()
@@ -1323,13 +1616,22 @@ def dashboard(dataset_id):
             for column in pid_candidates
         )
     ]
-    all_pid_rows = sort_pid_rows(
-        [
-            {"index": index, "record": record}
-            for index, record in enumerate(dataset.records)
-        ],
-        pid_candidates,
-    )
+    enriched_rows = []
+    for index, record in enumerate(dataset.records):
+        row_pids = []
+        for col in pid_candidates:
+            val = record.get(col)
+            if val is not None and str(val).strip() and str(val).strip().lower() != "nan":
+                row_pids.append(str(val).strip())
+        enriched_rows.append(
+            {
+                "index": index,
+                "record": record,
+                "pids": row_pids,
+                "primary_pid": row_pids[0] if row_pids else f"Row {index + 1}",
+            }
+        )
+    all_pid_rows = sort_pid_rows(enriched_rows, pid_candidates)
     pid_sequence_gaps = find_pid_sequence_gaps(dataset.records, pid_candidates)
     pid_sequence_gap_count = sum(
         len(group["missing_ids"]) for group in pid_sequence_gaps
@@ -1364,6 +1666,21 @@ def dashboard(dataset_id):
         1 for chart in charts if not chart.get("is_grouped")
     )
 
+    observed_pids_set = set()
+    for rec in dataset.records:
+        for c in pid_candidates:
+            val = rec.get(c)
+            if val is not None and str(val).strip():
+                p = str(val).strip()
+                observed_pids_set.add(p)
+                observed_pids_set.add(re.sub(r"[^A-Za-z0-9]", "", p).casefold())
+
+    lilongwe_records = get_or_seed_tracking(dataset.id, "Lilongwe")
+    salima_records = get_or_seed_tracking(dataset.id, "Salima")
+
+    lilongwe_tracking = compile_tracking_summary(lilongwe_records, observed_pids_set)
+    salima_tracking = compile_tracking_summary(salima_records, observed_pids_set)
+
     return render_template(
         "dashboard.html",
         dataset=dataset,
@@ -1386,6 +1703,8 @@ def dashboard(dataset_id):
         total_individual_charts=total_individual_charts,
         new_upload=request.args.get("new_upload") == "1",
         saved_path=dataset.saved_path,
+        lilongwe_tracking=lilongwe_tracking,
+        salima_tracking=salima_tracking,
     )
 
 
@@ -1548,6 +1867,7 @@ def save_codebook_mapping(dataset_id):
 
 
 @app.route("/studies/<int:dataset_id>/report")
+@app.route("/studies/<int:dataset_id>/download/all")
 def download_report(dataset_id):
     dataset = db.session.get(StudyDataset, dataset_id)
     if dataset is None:
@@ -1559,6 +1879,193 @@ def download_report(dataset_id):
         as_attachment=True,
         download_name=download_name,
     )
+
+
+@app.route("/studies/<int:dataset_id>/download/cleaned-data")
+def download_cleaned_data(dataset_id):
+    dataset = db.session.get(StudyDataset, dataset_id)
+    if dataset is None:
+        abort(404)
+    report, download_name = build_cleaned_data_workbook(dataset)
+    return send_file(
+        report,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=download_name,
+    )
+
+
+@app.route("/studies/<int:dataset_id>/download/cleaning-report")
+def download_cleaning_report_only(dataset_id):
+    dataset = db.session.get(StudyDataset, dataset_id)
+    if dataset is None:
+        abort(404)
+    report, download_name = build_cleaning_report_only_workbook(dataset)
+    return send_file(
+        report,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=download_name,
+    )
+
+
+@app.route("/studies/<int:dataset_id>/tracking/download/<site>")
+def download_tracking_sheet(dataset_id, site):
+    dataset = db.session.get(StudyDataset, dataset_id)
+    if dataset is None:
+        abort(404)
+    site_name = "Salima" if str(site).lower() == "salima" else "Lilongwe"
+    records = get_or_seed_tracking(dataset.id, site_name)
+    df = pd.DataFrame(
+        [
+            {
+                "PID": r.pid,
+                "QUESTIONEER": r.questionnaire_date or "",
+                "DENTAL": r.dental_date or "",
+                "ENDO YES/NO": (r.endo_status or "").upper(),
+                "ENDO DATE": r.endo_date or "",
+                "COMMENT": r.comment or "",
+            }
+            for r in records
+        ]
+    )
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name=f"{site_name} tracking", index=False)
+    output.seek(0)
+    download_name = f"{site_name}-tracking-{dataset.id}.xlsx"
+    return send_file(
+        output,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=download_name,
+    )
+
+
+@app.route("/studies/<int:dataset_id>/tracking/upload", methods=["POST"])
+def upload_tracking_sheet(dataset_id):
+    dataset = db.session.get(StudyDataset, dataset_id)
+    if dataset is None:
+        abort(404)
+    site = request.form.get("site", "Lilongwe")
+    site_name = "Salima" if str(site).lower() == "salima" else "Lilongwe"
+    file = request.files.get("tracking_file")
+    if not file or not file.filename:
+        flash("Please select a tracking CSV or Excel file to upload.", "error")
+        return redirect(url_for("dashboard", dataset_id=dataset.id) + "#tracking-section")
+
+    try:
+        raw_df = read_upload(file)
+        col_map = {}
+        for col in raw_df.columns:
+            c = str(col).strip().casefold()
+            if "pid" in c:
+                col_map["pid"] = col
+            elif "quest" in c:
+                col_map["questionnaire"] = col
+            elif "dent" in c:
+                col_map["dental"] = col
+            elif "endo" in c and "date" not in c:
+                col_map["endo_status"] = col
+            elif "endo" in c and "date" in c:
+                col_map["endo_date"] = col
+            elif "comment" in c or "reason" in c:
+                col_map["comment"] = col
+
+        if "pid" not in col_map:
+            flash("The tracking file must contain a 'PID' column.", "error")
+            return redirect(url_for("dashboard", dataset_id=dataset.id) + "#tracking-section")
+
+        # Replace existing records for this dataset and site
+        ParticipantTracking.query.filter_by(
+            dataset_id=dataset.id, site=site_name
+        ).delete()
+
+        new_entries = []
+        for _, row in raw_df.iterrows():
+            pid_raw = row.get(col_map["pid"])
+            if pd.isna(pid_raw) or not str(pid_raw).strip() or str(pid_raw).strip().lower() == "nan":
+                continue
+            pid_val = str(pid_raw).strip()
+            q_val = (
+                str(row[col_map["questionnaire"]]).strip()
+                if "questionnaire" in col_map and pd.notna(row.get(col_map["questionnaire"]))
+                else None
+            )
+            d_val = (
+                str(row[col_map["dental"]]).strip()
+                if "dental" in col_map and pd.notna(row.get(col_map["dental"]))
+                else None
+            )
+            endo_raw = (
+                str(row[col_map["endo_status"]]).strip().upper()
+                if "endo_status" in col_map and pd.notna(row.get(col_map["endo_status"]))
+                else None
+            )
+            endo_s = endo_raw if endo_raw in ("YES", "NO") else None
+            endo_d = (
+                str(row[col_map["endo_date"]]).strip()
+                if "endo_date" in col_map and pd.notna(row.get(col_map["endo_date"]))
+                else None
+            )
+            comm = (
+                str(row[col_map["comment"]]).strip()
+                if "comment" in col_map and pd.notna(row.get(col_map["comment"]))
+                else None
+            )
+
+            new_entries.append(
+                ParticipantTracking(
+                    dataset_id=dataset.id,
+                    site=site_name,
+                    pid=pid_val,
+                    questionnaire_date=q_val,
+                    dental_date=d_val,
+                    endo_status=endo_s,
+                    endo_date=endo_d,
+                    comment=comm,
+                )
+            )
+
+        db.session.bulk_save_objects(new_entries)
+        db.session.commit()
+        flash(
+            f"Successfully updated {len(new_entries)} tracking records for {site_name}.",
+            "success",
+        )
+    except Exception as e:
+        db.session.rollback()
+        app.logger.exception("Tracking upload failed")
+        flash(f"Failed to process tracking file: {str(e)}", "error")
+
+    return redirect(url_for("dashboard", dataset_id=dataset.id) + "#tracking-section")
+
+
+@app.route("/studies/<int:dataset_id>/tracking/edit", methods=["POST"])
+def edit_tracking_row(dataset_id):
+    dataset = db.session.get(StudyDataset, dataset_id)
+    if dataset is None:
+        abort(404)
+    row_id = request.form.get("row_id")
+    record = ParticipantTracking.query.filter_by(id=row_id).first()
+    if not record:
+        abort(404)
+    # Associate the record with this dataset if it isn't already
+    if record.dataset_id is None:
+        record.dataset_id = dataset.id
+    record.questionnaire_date = request.form.get("questionnaire_date", "").strip() or None
+    record.dental_date = request.form.get("dental_date", "").strip() or None
+    endo_s = request.form.get("endo_status", "").strip().upper() or None
+    record.endo_status = endo_s if endo_s in ("YES", "NO") else None
+    record.endo_date = request.form.get("endo_date", "").strip() or None
+    record.comment = request.form.get("comment", "").strip() or None
+    try:
+        db.session.commit()
+        flash(f"Updated tracking record for {record.pid}.", "success")
+    except Exception:
+        db.session.rollback()
+        flash("Could not update tracking record.", "error")
+    return redirect(url_for("dashboard", dataset_id=dataset.id) + "#tracking-section")
 
 
 @app.route("/studies/<int:dataset_id>/save-path", methods=["POST"])

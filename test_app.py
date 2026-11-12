@@ -1157,6 +1157,102 @@ class StudyDashTests(unittest.TestCase):
         self.assertIn(b"View individual columns (2)", response.data)
         self.assertIn(b"View individual columns (3)", response.data)
 
+    def test_separate_downloads_for_cleaned_data_report_and_combined_all(self):
+        csv_data = b"PID,score,category\nP1,10,A\nP2,20,B\n"
+        self.client.post(
+            "/upload",
+            data={
+                "study_name": "Separate Download Test",
+                "file": (io.BytesIO(csv_data), "data.csv"),
+            },
+            content_type="multipart/form-data",
+        )
+
+        # 1. Download all together
+        resp_all = self.client.get("/studies/1/download/all")
+        self.assertEqual(resp_all.status_code, 200)
+        wb_all = load_workbook(io.BytesIO(resp_all.data), read_only=True)
+        self.assertIn("Cleaning report", wb_all.sheetnames)
+        self.assertIn("Cleaned data", wb_all.sheetnames)
+        wb_all.close()
+
+        # 2. Download cleaned data only
+        resp_data = self.client.get("/studies/1/download/cleaned-data")
+        self.assertEqual(resp_data.status_code, 200)
+        wb_data = load_workbook(io.BytesIO(resp_data.data), read_only=True)
+        self.assertEqual(wb_data.sheetnames, ["Cleaned data"])
+        data_rows = list(wb_data["Cleaned data"].values)
+        self.assertEqual(data_rows[0], ("PID", "score", "category"))
+        self.assertEqual(data_rows[1], ("P1", 10, "A"))
+        wb_data.close()
+
+        # 3. Download cleaning report only
+        resp_report = self.client.get("/studies/1/download/cleaning-report")
+        self.assertEqual(resp_report.status_code, 200)
+        wb_rep = load_workbook(io.BytesIO(resp_report.data), read_only=True)
+        self.assertEqual(wb_rep.sheetnames, ["Cleaning report"])
+        report_rows = list(wb_rep["Cleaning report"].values)
+        self.assertIn(("Study", "Separate Download Test"), report_rows)
+        wb_rep.close()
+
+    def test_procedure_tracking_for_lilongwe_and_salima_with_upload_and_download(self):
+        csv_data = b"Pid_lilongwe,age\nESD-01-0001,50\nESD-01-0013,60\n"
+        response = self.client.post(
+            "/upload",
+            data={
+                "study_name": "Procedure Tracking Test",
+                "file": (io.BytesIO(csv_data), "tracking_test.csv"),
+            },
+            content_type="multipart/form-data",
+            follow_redirects=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        # Check download buttons on dashboard
+        self.assertIn(b"Download All (3 Sheets)", response.data)
+        self.assertIn(b"Cleaned Data", response.data)
+        self.assertIn(b"Report Only", response.data)
+
+        # Check tracking section presence
+        self.assertIn(b"Participant Procedure Tracking", response.data)
+        self.assertIn(b"Lilongwe Site (ESD-01)", response.data)
+        self.assertIn(b"Salima Site (ESD-02)", response.data)
+        self.assertIn(b"ESD-01-0001", response.data)
+        self.assertIn(b"Could not tolerate scope", response.data)
+        self.assertIn(b"Refused further participation", response.data)
+        self.assertIn(b"Esophageal Varices", response.data)
+
+        # Download tracking sheet for Lilongwe
+        resp_track = self.client.get("/studies/1/tracking/download/lilongwe")
+        self.assertEqual(resp_track.status_code, 200)
+        wb_track = load_workbook(io.BytesIO(resp_track.data), read_only=True)
+        self.assertIn("Lilongwe tracking", wb_track.sheetnames)
+        sheet_rows = list(wb_track["Lilongwe tracking"].values)
+        self.assertEqual(
+            sheet_rows[0],
+            ("PID", "QUESTIONEER", "DENTAL", "ENDO YES/NO", "ENDO DATE", "COMMENT"),
+        )
+        wb_track.close()
+
+        # Upload updated tracking sheet for Salima
+        new_salima_csv = (
+            b"PID,QUESTIONEER,DENTAL,ENDO YES/NO,ENDO DATE,COMMENT\n"
+            b"ESD-02-0001,01/03/2024,01/03/2024,YES,02-Mar-24,\n"
+            b"ESD-02-0002,01/03/2024,01/03/2024,NO,,High Blood Pressure\n"
+        )
+        resp_upload = self.client.post(
+            "/studies/1/tracking/upload",
+            data={
+                "site": "Salima",
+                "tracking_file": (io.BytesIO(new_salima_csv), "salima_track.csv"),
+            },
+            content_type="multipart/form-data",
+            follow_redirects=True,
+        )
+        self.assertEqual(resp_upload.status_code, 200)
+        self.assertIn(b"Successfully updated 2 tracking records for Salima", resp_upload.data)
+        self.assertIn(b"High Blood Pressure", resp_upload.data)
+
 
 if __name__ == "__main__":
     unittest.main()
