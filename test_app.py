@@ -1335,6 +1335,36 @@ class StudyDashTests(unittest.TestCase):
         self.assertIn(b'aria-expanded="false"', resp.data)
         self.assertIn(b"Expand Tracking", resp.data)
 
+    def test_chart_snapshot_button_and_all_categories_retained(self):
+        # Create a dataset with 15 distinct categories in a column
+        rows = ["PID,category"]
+        for i in range(15):
+            rows.append(f"P{i},Category_{i:02d}")
+        csv_data = "\n".join(rows).encode("utf-8")
+
+        self.client.post(
+            "/upload",
+            data={
+                "study_name": "Snapshot & Categories Test",
+                "file": (io.BytesIO(csv_data), "cats.csv"),
+            },
+            content_type="multipart/form-data",
+        )
+        with app.app_context():
+            dataset = StudyDataset.query.filter_by(study_name="Snapshot & Categories Test").first()
+            charts, preview, pids = dashboard_data(dataset)
+            cat_chart = next(c for c in charts if c["name"] == "category")
+            # All 15 categories must be retained in the variant payload
+            self.assertEqual(len(cat_chart["variants"][0]["labels"]), 15)
+            self.assertIn("showing first 10 of 15", cat_chart["summary"])
+
+            # Also dashboard HTML must render snapshot button and toggle limit button
+            resp = self.client.get(f"/studies/{dataset.id}")
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn(b'data-snapshot-chart="', resp.data)
+            self.assertIn(b"Snapshot", resp.data)
+            self.assertIn(b'data-toggle-chart-limit="', resp.data)
+
 
 if __name__ == "__main__":
     unittest.main()

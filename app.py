@@ -808,7 +808,7 @@ def build_single_column_chart(
         }
     if value_labels:
         codes = values.map(normalize_code)
-        frequencies = codes.value_counts().head(10)
+        frequencies = codes.value_counts()
         category_codes = frequencies.index.tolist()
         ordered_english = [
             value_labels.get(code, {}).get("en")
@@ -846,8 +846,9 @@ def build_single_column_chart(
             "response_list": list_name,
             "variants": variants,
             "summary": (
-                f"{len(values):,} responses · {len(frequencies):,} response "
-                f"categories · response list: {list_name}"
+                f"{len(values):,} responses · showing first 10 of {len(frequencies):,} categories · response list: {list_name}"
+                if len(frequencies) > 10
+                else f"{len(values):,} responses · {len(frequencies):,} response categories · response list: {list_name}"
             ),
         }
     elif pd.api.types.is_numeric_dtype(values):
@@ -926,7 +927,7 @@ def build_single_column_chart(
                 ),
             }
 
-        frequencies = raw_values.value_counts().head(10)
+        frequencies = raw_values.value_counts()
         pids_per_cat = []
         for cat in frequencies.index:
             cat_indices = raw_values[raw_values == cat].index
@@ -949,8 +950,9 @@ def build_single_column_chart(
             "coded": False,
             "variants": variants,
             "summary": (
-                f"{values.nunique():,} unique values · "
-                f"showing top {len(frequencies)}"
+                f"{values.nunique():,} unique values · showing first 10 of {len(frequencies):,}"
+                if len(frequencies) > 10
+                else f"{values.nunique():,} unique values · {len(frequencies):,} categories"
             ),
         }
 
@@ -1105,7 +1107,7 @@ def dashboard_data(dataset, codebook=None):
 
     preview = [
         {key: (None if pd.isna(value) else value) for key, value in row.items()}
-        for row in dataset.records[:10]
+        for row in dataset.records
     ]
     all_dataset_pids = row_pids.tolist()
     return charts, preview, all_dataset_pids

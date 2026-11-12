@@ -293,3 +293,31 @@ function navigateToPidRow(pid) {
 
 // Expose globally so charts.js showPidsModal can call it
 window.navigateToPidRow = navigateToPidRow;
+
+
+/* ===== Data Preview Table Toggle (First 10 vs All) ===== */
+(function initPreviewRecordsToggle() {
+  const btn = document.getElementById("btn-toggle-preview-records");
+  const countLabel = document.getElementById("preview-count-label");
+  if (!btn) return;
+
+  btn.addEventListener("click", () => {
+    const isExpanded = btn.getAttribute("aria-expanded") === "true";
+    const extraRows = document.querySelectorAll(".preview-extra-row");
+    const totalCount = extraRows.length + 10;
+
+    btn.setAttribute("aria-expanded", String(!isExpanded));
+    extraRows.forEach((row) => {
+      row.hidden = isExpanded;
+    });
+
+    const span = btn.querySelector("span") || btn;
+    if (isExpanded) {
+      span.textContent = `Show all records (${totalCount}) ▾`;
+      if (countLabel) countLabel.textContent = `First 10 records of ${totalCount} · all rows in downloaded report`;
+    } else {
+      span.textContent = `Show first 10 records ▴`;
+      if (countLabel) countLabel.textContent = `Showing all ${totalCount} records · all rows in downloaded report`;
+    }
+  });
+})();

@@ -24,12 +24,20 @@
             {% endif %}
           </div>
           {% if chart.description %}<p class="chart-description">{{ chart.description }}</p>{% endif %}
-          <p>{{ chart.summary }}</p>
-          {% if chart.is_grouped and chart.group_columns %}
-            <button type="button" class="button subcolumn-toggle-btn" data-toggle-subcolumns="{{ chart.name }}" aria-expanded="false" title="Expand or collapse individual sub-columns">
-              <span>View individual columns ({{ chart.group_columns|length }})</span>
+          <p class="chart-summary-text" id="chart-summary-{{ chart_index }}">{{ chart.summary }}</p>
+          <div class="chart-header-actions-row">
+            {% if chart.is_grouped and chart.group_columns %}
+              <button type="button" class="button subcolumn-toggle-btn" data-toggle-subcolumns="{{ chart.name }}" aria-expanded="false" title="Expand or collapse individual sub-columns">
+                <span>View individual columns ({{ chart.group_columns|length }})</span>
+              </button>
+            {% endif %}
+            <button type="button" class="button chart-snapshot-btn" data-snapshot-chart="{{ chart_index }}" title="Download a snapshot of this chart with numbers as an image">
+              <span>📷</span> Snapshot
             </button>
-          {% endif %}
+            <button type="button" class="button chart-limit-toggle-btn" data-toggle-chart-limit="{{ chart_index }}" aria-expanded="false" title="Toggle between showing first 10 records and all records" hidden>
+              <span>Show all records ▾</span>
+            </button>
+          </div>
         </div>
         {% if codebook %}
           {% set current_list = codebook.variables.variable_lists.get(chart.name, chart.response_list or "") %}
@@ -681,7 +689,13 @@
   </section>
 
   <section class="preview-section">
-    <div class="section-heading"><div><p class="eyebrow">CLEANED DATA</p><h2>Data preview</h2></div><span class="muted">First {{ preview|length }} records · all rows in downloaded report</span></div>
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">CLEANED DATA</p>
+        <h2>Data preview</h2>
+      </div>
+      <span class="muted" id="preview-count-label">{% if preview|length > 10 %}First 10 records of {{ preview|length }} · all rows in downloaded report{% else %}First {{ preview|length }} records · all rows in downloaded report{% endif %}</span>
+    </div>
     <div class="table-view-controls">
       <div class="table-view-toggle" role="group" aria-label="Data preview column grouping">
         <button type="button" class="button table-mode-btn active" data-table-mode="grouped" aria-pressed="true">
@@ -691,11 +705,37 @@
           ☰ Show all columns ({{ dataset.column_names|length }})
         </button>
       </div>
+      {% if preview|length > 10 %}
+        <button type="button" class="button preview-limit-toggle-btn" id="btn-toggle-preview-records" aria-expanded="false" title="Toggle between first 10 records and all records">
+          <span>Show all records ({{ preview|length }}) ▾</span>
+        </button>
+      {% endif %}
       <span class="muted table-mode-caption">Sub-columns are consolidated into category groups. Switch to "Show all columns" to view raw individual variables.</span>
     </div>
-    <div class="table-wrap view-grouped"><table><thead><tr><th>Row</th>{% for column in dataset.column_names %}{% set is_sub = column in subcolumn_to_group %}<th class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}" data-column="{{ column }}">{{ column }}{% if column in grouped_categories %} <span class="col-group-indicator">Grouped</span>{% endif %}</th>{% endfor %}</tr></thead><tbody>
-      {% for row in preview %}<tr data-dataset-row="true" data-primary-pid="{% for col in pid_candidates %}{% if row[col] and row[col] != None %}{{ row[col] }}{% endif %}{% endfor %}"><td>{{ loop.index }}</td>{% for column in dataset.column_names %}{% set is_sub = column in subcolumn_to_group %}<td class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}"{% if column in label_maps %} data-label-column="{{ column }}" data-raw-value="{{ row[column] }}"{% endif %}>{{ row[column] if row[column] is not none else "—" }}</td>{% endfor %}</tr>{% endfor %}
-    </tbody></table></div>
+    <div class="table-wrap view-grouped">
+      <table>
+        <thead>
+          <tr>
+            <th>Row</th>
+            {% for column in dataset.column_names %}
+              {% set is_sub = column in subcolumn_to_group %}
+              <th class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}" data-column="{{ column }}">{{ column }}{% if column in grouped_categories %} <span class="col-group-indicator">Grouped</span>{% endif %}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in preview %}
+            <tr data-dataset-row="true" {% if loop.index > 10 %}class="preview-extra-row" hidden{% endif %} data-primary-pid="{% for col in pid_candidates %}{% if row[col] and row[col] != None %}{{ row[col] }}{% endif %}{% endfor %}">
+              <td>{{ loop.index }}</td>
+              {% for column in dataset.column_names %}
+                {% set is_sub = column in subcolumn_to_group %}
+                <td class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}"{% if column in label_maps %} data-label-column="{{ column }}" data-raw-value="{{ row[column] }}"{% endif %}>{{ row[column] if row[column] is not none else "—" }}</td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </section>
 
   <script src="{{ url_for('static', filename='dashboard.js') }}" defer></script>

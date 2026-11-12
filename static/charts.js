@@ -11,6 +11,21 @@ const CHART_WIDTH = 800;
 const ROW_HEIGHT = 38;
 let chartLanguage = "en";
 const categoryFilters = new Map();
+const chartShowAllMap = new Map();
+
+function sliceVariant(variant, limit) {
+  if (!variant || !variant.labels || variant.labels.length <= limit) return variant;
+  const result = {
+    ...variant,
+    labels: variant.labels.slice(0, limit),
+  };
+  if (variant.labels_en) result.labels_en = variant.labels_en.slice(0, limit);
+  if (variant.labels_ny) result.labels_ny = variant.labels_ny.slice(0, limit);
+  if (variant.values) result.values = variant.values.slice(0, limit);
+  if (variant.codes) result.codes = variant.codes.slice(0, limit);
+  if (variant.pids) result.pids = variant.pids.slice(0, limit);
+  return result;
+}
 
 /* ---------- helpers ---------- */
 
@@ -299,8 +314,31 @@ function filteredVariant(variant, filterIndex) {
 
 function renderChart(chartIndex, variantIndex) {
   const chart = chartData[chartIndex];
+  const rawVariant = chart.variants[variantIndex];
+  if (!rawVariant) return;
+
+  const totalItems = rawVariant.labels ? rawVariant.labels.length : 0;
+  const hasMoreThan10 = totalItems > 10;
+  const showAll = chartShowAllMap.get(chartIndex) === true;
+
+  // Update card toggle button if present
+  const toggleBtn = document.querySelector(`[data-toggle-chart-limit="${chartIndex}"]`);
+  if (toggleBtn) {
+    if (hasMoreThan10) {
+      toggleBtn.hidden = false;
+      toggleBtn.setAttribute("aria-expanded", String(showAll));
+      const span = toggleBtn.querySelector("span") || toggleBtn;
+      span.textContent = showAll ? "Show first 10 ▴" : `Show all records (${totalItems}) ▾`;
+    } else {
+      toggleBtn.hidden = true;
+    }
+  }
+
+  // Slice to 10 if not showing all
+  const baseVariant = (hasMoreThan10 && !showAll) ? sliceVariant(rawVariant, 10) : rawVariant;
+
   const filterIndex = categoryFilters.get(chartIndex);
-  const variant = filteredVariant(chart.variants[variantIndex], filterIndex);
+  const variant = filteredVariant(baseVariant, filterIndex);
   variant.labels = localizedLabels(variant);
   const host = document.querySelector(
     `[data-chart-host="${chartIndex}-${variantIndex}"]`,
@@ -340,8 +378,14 @@ function renderChart(chartIndex, variantIndex) {
 function renderFrequencyTable(chartIndex) {
   const chart = chartData[chartIndex];
   if (!chart || chart.kind !== "categories" || !chart.variants.length) return;
+  const rawVariant = chart.variants[0];
+  const totalItems = rawVariant.labels ? rawVariant.labels.length : 0;
+  const hasMoreThan10 = totalItems > 10;
+  const showAll = chartShowAllMap.get(chartIndex) === true;
+  const baseVariant = (hasMoreThan10 && !showAll) ? sliceVariant(rawVariant, 10) : rawVariant;
+
   const variant = filteredVariant(
-    chart.variants[0],
+    baseVariant,
     categoryFilters.get(chartIndex),
   );
   const labels = localizedLabels(variant);
@@ -751,4 +795,181 @@ document.getElementById("pid-viewer-close")?.addEventListener("click", () => {
 
 document.getElementById("pid-viewer-modal")?.addEventListener("click", (e) => {
   if (e.target === e.currentTarget) e.currentTarget.close();
+});
+
+
+/* ---------- Chart Snapshot Download & Limit Toggling ---------- */
+
+function downloadChartSnapshot(chartIndex, triggerBtn) {
+  const chart = chartData[chartIndex];
+  if (!chart) return;
+  const host = document.querySelector(`[data-chart-host^="${chartIndex}-"]`);
+  const svg = host ? host.querySelector("svg") : null;
+  if (!svg) return;
+
+  const originalBtnText = triggerBtn ? triggerBtn.innerHTML : "";
+  if (triggerBtn) {
+    triggerBtn.textContent = "⏳ Generating...";
+    triggerBtn.disabled = true;
+  }
+
+  // Clone SVG so we don't modify the on-screen DOM
+  const clonedSvg = svg.cloneNode(true);
+  clonedSvg.setAttribute("xmlns", svgNamespace);
+
+  // Inject required styles so the SVG self-renders accurately inside canvas
+  const styleEl = document.createElementNS(svgNamespace, "style");
+  styleEl.textContent = `
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+    .chart-gridline { stroke: #e2e8f0; stroke-width: 1px; stroke-dasharray: 4 4; }
+    .chart-tick { font-size: 13px; fill: #475569; }
+    .chart-value { font-size: 13px; font-weight: 700; fill: #0f172a; }
+    .donut-total { font-size: 32px; font-weight: 800; fill: #0f172a; }
+    .legend-text { font-size: 13px; fill: #334155; }
+    .chart-line { stroke: #7057df; stroke-width: 3.5px; fill: none; }
+    .chart-point { fill: #7057df; stroke: #ffffff; stroke-width: 2.5px; }
+    .box-whisker { stroke: #7057df; stroke-width: 2px; }
+    .box-cap { stroke: #7057df; stroke-width: 2px; }
+    .box-range { fill: #ede9fe; stroke: #7057df; stroke-width: 2px; }
+    .box-median { stroke: #4338ca; stroke-width: 3px; }
+    .box-explanation { font-size: 12px; fill: #64748b; }
+    .chart-bar-track { fill: #f1f5f9; }
+  `;
+  clonedSvg.insertBefore(styleEl, clonedSvg.firstChild);
+
+  const viewBox = clonedSvg.viewBox.baseVal;
+  const svgWidth = (viewBox && viewBox.width > 0) ? viewBox.width : 800;
+  const svgHeight = (viewBox && viewBox.height > 0) ? viewBox.height : 380;
+
+  const svgXml = new XMLSerializer().serializeToString(clonedSvg);
+  const svgBlob = new Blob([svgXml], { type: "image/svg+xml;charset=utf-8" });
+  const svgUrl = URL.createObjectURL(svgBlob);
+
+  const img = new Image();
+  img.onload = () => {
+    try {
+      const scale = 2; // 2x Retina resolution
+      const headerH = 100;
+      const footerH = 45;
+      const pad = 24;
+
+      const canvas = document.createElement("canvas");
+      canvas.width = (svgWidth + pad * 2) * scale;
+      canvas.height = (svgHeight + headerH + footerH + pad) * scale;
+
+      const ctx = canvas.getContext("2d");
+      ctx.scale(scale, scale);
+
+      // Clean white background
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, svgWidth + pad * 2, svgHeight + headerH + footerH + pad);
+
+      // Card border
+      ctx.strokeStyle = "#e2e8f0";
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(6, 6, (svgWidth + pad * 2) - 12, (svgHeight + headerH + footerH + pad) - 12);
+
+      // Category / Eyebrow
+      ctx.font = "bold 11px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+      ctx.fillStyle = "#6366f1";
+      ctx.fillText("STUDYDASH AUTOMATIC ANALYSIS", pad, pad + 12);
+
+      // Title
+      ctx.font = "bold 20px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+      ctx.fillStyle = "#0f172a";
+      ctx.fillText(chart.name, pad, pad + 38);
+
+      // Summary
+      ctx.font = "13px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+      ctx.fillStyle = "#64748b";
+      ctx.fillText(chart.summary || "", pad, pad + 60);
+
+      // Divider line
+      ctx.strokeStyle = "#f1f5f9";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(pad, pad + 74);
+      ctx.lineTo(svgWidth + pad, pad + 74);
+      ctx.stroke();
+
+      // Draw SVG chart with all numbers & bars
+      ctx.drawImage(img, pad, headerH, svgWidth, svgHeight);
+
+      // Footer
+      const footerY = headerH + svgHeight + 22;
+      ctx.font = "11px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+      ctx.fillStyle = "#94a3b8";
+      const nowStr = new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+      ctx.fillText(`StudyDash • Numbers & visual snapshot exported on ${nowStr}`, pad, footerY);
+
+      URL.revokeObjectURL(svgUrl);
+
+      canvas.toBlob((blob) => {
+        if (!blob) return;
+        const safeName = chart.name.replace(/[^a-zA-Z0-9_\-]/g, "_");
+        const a = document.createElement("a");
+        a.download = `${safeName}_snapshot.png`;
+        a.href = URL.createObjectURL(blob);
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(a.href), 3000);
+
+        if (triggerBtn) {
+          triggerBtn.disabled = false;
+          triggerBtn.textContent = "✓ Snapshot Saved!";
+          setTimeout(() => { triggerBtn.innerHTML = originalBtnText; }, 2500);
+        }
+      }, "image/png");
+    } catch (err) {
+      console.error("Error creating chart snapshot:", err);
+      URL.revokeObjectURL(svgUrl);
+      if (triggerBtn) {
+        triggerBtn.disabled = false;
+        triggerBtn.textContent = "Error saving";
+        setTimeout(() => { triggerBtn.innerHTML = originalBtnText; }, 2000);
+      }
+    }
+  };
+
+  img.onerror = () => {
+    URL.revokeObjectURL(svgUrl);
+    if (triggerBtn) {
+      triggerBtn.disabled = false;
+      triggerBtn.textContent = "Error loading";
+      setTimeout(() => { triggerBtn.innerHTML = originalBtnText; }, 2000);
+    }
+  };
+
+  img.src = svgUrl;
+}
+
+document.addEventListener("click", (e) => {
+  const toggleBtn = e.target.closest("[data-toggle-chart-limit]");
+  if (toggleBtn) {
+    const chartIndex = Number(toggleBtn.dataset.toggleChartLimit);
+    const current = chartShowAllMap.get(chartIndex) === true;
+    chartShowAllMap.set(chartIndex, !current);
+
+    const chart = chartData[chartIndex];
+    const total = chart?.variants[0]?.labels?.length || 0;
+
+    renderChart(chartIndex, 0);
+    renderFrequencyTable(chartIndex);
+
+    const summaryEl = document.getElementById(`chart-summary-${chartIndex}`);
+    if (summaryEl) {
+      if (!current) {
+        summaryEl.textContent = `Showing all ${total.toLocaleString()} records`;
+      } else {
+        summaryEl.textContent = `Showing first 10 of ${total.toLocaleString()} records`;
+      }
+    }
+    return;
+  }
+
+  const snapBtn = e.target.closest("[data-snapshot-chart]");
+  if (snapBtn) {
+    const chartIndex = Number(snapBtn.dataset.snapshotChart);
+    downloadChartSnapshot(chartIndex, snapBtn);
+    return;
+  }
 });
