@@ -660,6 +660,7 @@
     {% if charts %}
       <script id="chart-data" type="application/json">{{ charts|tojson }}</script>
       <script id="label-map-data" type="application/json">{{ label_maps|tojson }}</script>
+      <script id="all-pids-data" type="application/json">{{ all_dataset_pids|tojson }}</script>
       <div class="chart-grid">
         {% for section in chart_sections %}
           {% if section.related %}
@@ -767,6 +768,7 @@
       <div class="pid-modal-toolbar">
         <input type="search" id="pid-modal-search" class="modal-input" placeholder="Search PIDs…" autocomplete="off">
         <span class="pid-modal-count" id="pid-modal-count"></span>
+        <button type="button" class="button pid-modal-toggle-btn" id="pid-modal-toggle" title="Switch between PIDs in this category and PIDs NOT in this category">🔄 Show excluded</button>
         <button type="button" class="button" id="pid-modal-copy">📋 Copy all</button>
       </div>
       <div class="pid-chip-grid" id="pid-chip-grid" aria-live="polite"></div>

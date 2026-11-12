@@ -2640,3 +2640,25 @@ tbody tr:last-child td {
   color: var(--color-muted, #6b7280);
   font-style: italic;
 }
+
+/* ================================================================
+   PID modal — excluded toggle button
+   ================================================================ */
+.pid-modal-toggle-btn {
+  white-space: nowrap;
+  font-size: 0.82rem;
+  border-color: var(--color-border, #d1d5db);
+  color: var(--color-muted, #6b7280);
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.pid-modal-toggle-btn.active {
+  background: #fef08a;
+  border-color: #ca8a04;
+  color: #92400e;
+  font-weight: 700;
+}
+
+.pid-modal-toggle-btn.active:hover {
+  background: #fde047;
+}

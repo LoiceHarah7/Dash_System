@@ -2,6 +2,9 @@ const chartData = JSON.parse(document.getElementById("chart-data").textContent);
 const codebookLabels = JSON.parse(
   document.getElementById("label-map-data")?.textContent || "{}",
 );
+const allDatasetPids = JSON.parse(
+  document.getElementById("all-pids-data")?.textContent || "[]",
+);
 const chartColors = ["#7057df", "#4b91d2", "#35a778", "#e5a43b", "#e16e78", "#42aab0", "#9470c9", "#81934b", "#df8650", "#7181aa"];
 const svgNamespace = "http://www.w3.org/2000/svg";
 const CHART_WIDTH = 800;
@@ -631,59 +634,111 @@ renderLanguage();
 function showPidsModal(chartName, categoryLabel, pidsList) {
   const modal = document.getElementById("pid-viewer-modal");
   if (!modal) return;
-  const allPids = Array.isArray(pidsList) ? pidsList : [];
+  const inPids = Array.isArray(pidsList) ? pidsList : [];
+
+  // Compute the excluded set: all dataset PIDs not in inPids
+  const inSet = new Set(inPids.map((p) => String(p).trim().toLowerCase()));
+  const excludedPids = allDatasetPids.filter(
+    (p) => !inSet.has(String(p).trim().toLowerCase())
+  );
+
+  let showingExcluded = false;
+  let activeList = inPids;
+
   const subtitle = document.getElementById("pid-modal-subtitle");
   const grid = document.getElementById("pid-chip-grid");
   const countEl = document.getElementById("pid-modal-count");
-  const searchEl = document.getElementById("pid-modal-search");
+  const toggleBtn = document.getElementById("pid-modal-toggle");
   const copyBtn = document.getElementById("pid-modal-copy");
 
   if (subtitle) subtitle.textContent = `${categoryLabel}${chartName ? " \u00b7 " + chartName : ""}`;
-  if (searchEl) searchEl.value = "";
+
+  // Reset toggle state
+  if (toggleBtn) {
+    toggleBtn.dataset.showing = "in";
+    toggleBtn.textContent = `Show excluded (${excludedPids.length.toLocaleString()})`;
+    toggleBtn.classList.remove("active");
+  }
+
+  function makeChip(pid) {
+    const chip = document.createElement("span");
+    chip.className = "pid-chip pid-chip-clickable";
+    chip.textContent = pid;
+    chip.title = `Click to navigate to ${pid} in the dataset`;
+    chip.setAttribute("role", "button");
+    chip.tabIndex = 0;
+    const navigate = () => {
+      if (typeof window.navigateToPidRow === "function") window.navigateToPidRow(pid);
+    };
+    chip.addEventListener("click", navigate);
+    chip.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); navigate(); }
+    });
+    return chip;
+  }
 
   function renderChips(list) {
     if (!grid) return;
     grid.replaceChildren();
-    list.forEach((pid) => {
-      const chip = document.createElement("span");
-      chip.className = "pid-chip pid-chip-clickable";
-      chip.textContent = pid;
-      chip.title = `Click to navigate to ${pid} in the dataset`;
-      chip.setAttribute("role", "button");
-      chip.tabIndex = 0;
-      chip.addEventListener("click", () => {
-        if (typeof window.navigateToPidRow === "function") window.navigateToPidRow(pid);
-      });
-      chip.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          if (typeof window.navigateToPidRow === "function") window.navigateToPidRow(pid);
-        }
-      });
-      grid.append(chip);
-    });
-    if (countEl) countEl.textContent = list.length.toLocaleString() + " of " + allPids.length.toLocaleString() + " PIDs";
+    list.forEach((pid) => grid.append(makeChip(pid)));
+    if (countEl) {
+      const total = showingExcluded ? excludedPids.length : inPids.length;
+      countEl.textContent = `${list.length.toLocaleString()} of ${total.toLocaleString()} PIDs`;
+    }
   }
 
-  renderChips(allPids);
+  renderChips(inPids);
+  activeList = inPids;
 
   // Re-attach search listener each time (clear old ones by cloning)
+  const searchEl = document.getElementById("pid-modal-search");
   if (searchEl) {
     const fresh = searchEl.cloneNode(true);
+    fresh.value = "";
     searchEl.parentNode.replaceChild(fresh, searchEl);
     fresh.addEventListener("input", () => {
       const q = fresh.value.trim().toLowerCase();
-      renderChips(q ? allPids.filter((p) => String(p).toLowerCase().includes(q)) : allPids);
+      renderChips(q ? activeList.filter((p) => String(p).toLowerCase().includes(q)) : activeList);
+    });
+  }
+
+  // Toggle between included / excluded
+  if (toggleBtn) {
+    const freshToggle = toggleBtn.cloneNode(true);
+    toggleBtn.parentNode.replaceChild(freshToggle, toggleBtn);
+    freshToggle.textContent = `Show excluded (${excludedPids.length.toLocaleString()})`;
+    freshToggle.classList.remove("active");
+    freshToggle.dataset.showing = "in";
+
+    freshToggle.addEventListener("click", () => {
+      showingExcluded = freshToggle.dataset.showing === "in";
+      if (showingExcluded) {
+        activeList = excludedPids;
+        freshToggle.textContent = `Show in category (${inPids.length.toLocaleString()})`;
+        freshToggle.classList.add("active");
+        freshToggle.dataset.showing = "excluded";
+        if (subtitle) subtitle.textContent = `NOT in: ${categoryLabel}${chartName ? " \u00b7 " + chartName : ""}`;
+      } else {
+        activeList = inPids;
+        freshToggle.textContent = `Show excluded (${excludedPids.length.toLocaleString()})`;
+        freshToggle.classList.remove("active");
+        freshToggle.dataset.showing = "in";
+        if (subtitle) subtitle.textContent = `${categoryLabel}${chartName ? " \u00b7 " + chartName : ""}`;
+      }
+      // Reset search and render
+      const curSearch = document.getElementById("pid-modal-search");
+      if (curSearch) curSearch.value = "";
+      renderChips(activeList);
     });
   }
 
   if (copyBtn) {
     copyBtn.onclick = () => {
-      navigator.clipboard.writeText(allPids.join("\n")).then(() => {
+      navigator.clipboard.writeText(activeList.join("\n")).then(() => {
         const original = copyBtn.textContent;
         copyBtn.textContent = "\u2713 Copied!";
         setTimeout(() => { copyBtn.textContent = original; }, 2000);
-      }).catch(() => { });
+      }).catch(() => {});
     };
   }
 

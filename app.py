@@ -1107,7 +1107,8 @@ def dashboard_data(dataset, codebook=None):
         {key: (None if pd.isna(value) else value) for key, value in row.items()}
         for row in dataset.records[:10]
     ]
-    return charts, preview
+    all_dataset_pids = row_pids.tolist()
+    return charts, preview, all_dataset_pids
 
 
 def group_related_charts(charts):
@@ -1594,7 +1595,7 @@ def dashboard(dataset_id):
         abort(404)
     codebook = db.session.get(StudyCodebook, dataset.id)
     codebook_data = codebook.variables if codebook else None
-    charts, preview = dashboard_data(dataset, codebook_data)
+    charts, preview, all_dataset_pids = dashboard_data(dataset, codebook_data)
     chart_sections = group_related_charts(charts)
     pid_candidates = detect_pid_columns(dataset.column_names)
     pid_selection = db.session.get(StudyPidSelection, dataset.id)
@@ -1705,6 +1706,7 @@ def dashboard(dataset_id):
         saved_path=dataset.saved_path,
         lilongwe_tracking=lilongwe_tracking,
         salima_tracking=salima_tracking,
+        all_dataset_pids=all_dataset_pids,
     )
 
 

@@ -308,7 +308,7 @@ class StudyDashTests(unittest.TestCase):
             }
         }
 
-        charts, _ = dashboard_data(dataset, codebook)
+        charts, _, _all_pids = dashboard_data(dataset, codebook)
         question_chart = next(chart for chart in charts if chart["name"] == "water_source")
 
         self.assertEqual(len(question_chart["variants"]), 1)
@@ -337,7 +337,7 @@ class StudyDashTests(unittest.TestCase):
             records=records,
         )
 
-        charts, _ = dashboard_data(dataset)
+        charts, _, _all_pids = dashboard_data(dataset)
         chart_types = {
             chart["name"]: chart["variants"][0]["type"]
             for chart in charts
