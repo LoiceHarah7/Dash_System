@@ -14,7 +14,7 @@
       <tr>
         <th>Field</th>
         {% for row in group.rows %}
-          <th>Row {{ row.index + 1 }}<br><small>{{ pid_column }}: {{ row.pid }}</small></th>
+          <th>Row {{ row.index + 1 }}<br><small>{% if id_columns and id_columns|length > 1 %}{{ row.composite_key }}{% else %}{{ pid_column or 'PID' }}: {{ row.pid }}{% endif %}</small></th>
         {% endfor %}
       </tr>
     </thead>

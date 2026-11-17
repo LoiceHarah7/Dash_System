@@ -80,7 +80,17 @@
   {% endmacro %}
   <a class="back-link" href="{{ url_for('index') }}">← All studies</a>
   <section class="dashboard-heading">
-    <div><p class="eyebrow">STUDY DASHBOARD</p><h1>{{ dataset.study_name }}</h1><p class="intro">{{ dataset.filename }} · Uploaded {{ dataset.uploaded_at.strftime('%b %d, %Y at %H:%M') }}{% if codebook %} · Codebook: {{ codebook.filename }}{% endif %}{% if saved_path %} · <span class="saved-path-chip" title="{{ saved_path }}">📂 {{ saved_path | truncate(50, True, '…') }}</span>{% endif %}</p></div>
+    <div>
+      <p class="eyebrow">STUDY DASHBOARD</p>
+      <h1>{{ dataset.study_name }}</h1>
+      <p class="intro">
+        {{ dataset.filename }} · Uploaded {{ dataset.uploaded_at.strftime('%b %d, %Y at %H:%M') }}
+        {% if dataset.expected_participants %} · <span class="expected-participants-pill" title="Total number of participants expected for this study">👥 Total Participants Expected: <strong>{{ "{:,}".format(dataset.expected_participants) }}</strong></span>{% endif %}
+        {% if id_columns and id_columns|length > 1 %} · <span class="clean-mode-pill" title="Unique record identifier key">🔑 Unique Key: <strong>{{ id_columns|join(' + ') }}</strong></span>{% endif %}
+        {% if codebook %} · Codebook: {{ codebook.filename }}{% endif %}
+        {% if saved_path %} · <span class="saved-path-chip" title="{{ saved_path }}">📂 {{ saved_path | truncate(50, True, '…') }}</span>{% endif %}
+      </p>
+    </div>
     <div class="download-cluster" role="group" aria-label="Download options">
       <a class="button report-button download-all-btn" href="{{ url_for('download_report', dataset_id=dataset.id) }}" title="Download all 3 sheets in one workbook (Cleaning Report, Cleaned Data, Codebook)"><span>↓</span> Download All (3 Sheets)</a>
       <a class="button download-sub-button" href="{{ url_for('download_cleaned_data', dataset_id=dataset.id) }}" title="Download cleaned dataset only"><span>▤</span> Cleaned Data</a>
@@ -120,8 +130,16 @@
 
   <section class="metrics">
     <article class="metric-card"><span class="metric-icon violet">▤</span><span class="metric-label">Records</span><strong>{{ "{:,}".format(dataset.rows) }}</strong><small>after cleaning</small></article>
+    {% if dataset.expected_participants %}
+      <article class="metric-card metric-expected-card">
+        <span class="metric-icon purple">👥</span>
+        <span class="metric-label">Expected Participants</span>
+        <strong>{{ "{:,}".format(dataset.expected_participants) }}</strong>
+        <small>total participants expected</small>
+      </article>
+    {% endif %}
     <article class="metric-card"><span class="metric-icon blue">⌗</span><span class="metric-label">Variables</span><strong>{{ dataset.columns }}</strong><small>data columns</small></article>
-    <article class="metric-card"><span class="metric-icon green">✓</span><span class="metric-label">PID duplicate groups</span><strong>{{ "{:,}".format(identical_pid_groups|length + differing_pid_groups|length) }}</strong><small>available to review</small></article>
+    <article class="metric-card"><span class="metric-icon green">✓</span><span class="metric-label">{% if id_columns and id_columns|length > 1 %}Duplicate groups{% else %}PID duplicate groups{% endif %}</span><strong>{{ "{:,}".format(identical_pid_groups|length + differing_pid_groups|length) }}</strong><small>available to review</small></article>
     <button class="metric-card missing-pids-card" id="missing-pids-toggle" type="button" aria-expanded="false" aria-controls="missing-pid-records">
       <span class="metric-icon amber">✳</span><span class="metric-label">Missing PIDs</span><strong>{{ "{:,}".format(missing_pid_rows|length) }}</strong><small>rows without a PID · click to view</small>
     </button>
@@ -213,11 +231,14 @@
 
   <section class="duplicate-section" id="duplicate-review">
     <div class="section-heading">
-      <div><p class="eyebrow">DATA QUALITY REVIEW</p><h2>PID duplicate review</h2></div>
+      <div>
+        <p class="eyebrow">DATA QUALITY REVIEW</p>
+        <h2>{% if id_columns and id_columns|length > 1 %}Duplicate review ({{ id_columns|join(' + ') }}){% else %}PID duplicate review{% endif %}</h2>
+      </div>
       <span class="muted">Uploaded rows are retained until you choose to drop one.</span>
     </div>
-    {% if pid_candidates %}
-      {% if pid_candidates|length > 1 %}
+    {% if id_columns %}
+      {% if pid_candidates and pid_candidates|length > 1 and (not dataset.clean_columns or dataset.clean_columns|length <= 1) %}
         <form class="pid-selection-form" method="post" action="{{ url_for('save_pid_selection', dataset_id=dataset.id) }}">
           <label for="pid-column">Identify duplicates using</label>
           <select id="pid-column" name="pid_column" required>
@@ -228,50 +249,53 @@
           </select>
           <button class="button mapping-button" type="submit">Use this PID</button>
         </form>
-      {% elif pid_column %}
-        <p class="pid-selection-note">Duplicate checks use <strong>{{ pid_column }}</strong>.</p>
+      {% elif id_columns|length == 1 %}
+        <p class="pid-selection-note">Duplicate checks use <strong>{{ id_columns[0] }}</strong>.</p>
       {% endif %}
-      {% if pid_column %}
-        <p class="pid-selection-note">Duplicate groups are identified using <strong>{{ pid_column }}</strong>. Other detected PID fields are shown for reference and do not count as answer differences.</p>
-        <details class="duplicate-category">
-          <summary class="duplicate-category-toggle">
-            <span>Identical rows with matching PIDs</span>
-            <span class="related-chart-count">{{ identical_pid_groups|length }} groups</span>
-          </summary>
-          {% if identical_pid_groups %}
-            {% for group in identical_pid_groups %}
-              <details class="duplicate-pid-group">
-                <summary>PID {{ group.pid }} · {{ group.rows|length }} identical rows</summary>
-                {% include "duplicate_comparison.html" %}
-              </details>
-            {% else %}
-              <p class="duplicate-empty">No identical rows share a PID.</p>
-            {% endfor %}
-          {% else %}
-            <p class="duplicate-empty">No identical rows share a PID.</p>
-          {% endif %}
-        </details>
-        <details class="duplicate-category">
-          <summary class="duplicate-category-toggle">
-            <span>Matching {{ pid_column }} values with different answers</span>
-            <span class="related-chart-count">{{ differing_pid_groups|length }} groups</span>
-          </summary>
-          {% if differing_pid_groups %}
-            {% for group in differing_pid_groups %}
-              <details class="duplicate-pid-group" open>
-                <summary>PID {{ group.pid }} · {{ group.rows|length }} rows differ</summary>
-                {% include "duplicate_comparison.html" %}
-              </details>
-            {% else %}
-              <p class="duplicate-empty">No differing rows share a PID.</p>
-            {% endfor %}
-          {% else %}
-            <p class="duplicate-empty">No differing rows share a PID.</p>
-          {% endif %}
-        </details>
-      {% endif %}
+
+      <p class="pid-selection-note">
+        {% if id_columns|length > 1 %}
+          Duplicate groups are identified using combined columns: <strong>{{ id_columns|join(' + ') }}</strong>. Rows where all {{ id_columns|length }} columns match are grouped together as duplicates. Other columns are compared to highlight differences.
+        {% else %}
+          Duplicate groups are identified using <strong>{{ id_columns[0] }}</strong>. Other detected PID fields are shown for reference and do not count as answer differences.
+        {% endif %}
+      </p>
+
+      <details class="duplicate-category" open>
+        <summary class="duplicate-category-toggle">
+          <span>Identical rows with matching {% if id_columns|length > 1 %}keys ({{ id_columns|join(' + ') }}){% else %}PIDs{% endif %}</span>
+          <span class="related-chart-count">{{ identical_pid_groups|length }} groups</span>
+        </summary>
+        {% if identical_pid_groups %}
+          {% for group in identical_pid_groups %}
+            <details class="duplicate-pid-group">
+              <summary>{% if id_columns|length > 1 %}Key: <strong>{{ group.composite_key }}</strong>{% else %}PID {{ group.pid }}{% endif %} · {{ group.rows|length }} identical rows</summary>
+              {% include "duplicate_comparison.html" %}
+            </details>
+          {% endfor %}
+        {% else %}
+          <p class="duplicate-empty">No identical rows share {% if id_columns|length > 1 %}matching combined keys{% else %}a PID{% endif %}.</p>
+        {% endif %}
+      </details>
+
+      <details class="duplicate-category" open>
+        <summary class="duplicate-category-toggle">
+          <span>Matching {% if id_columns|length > 1 %}{{ id_columns|join(' + ') }}{% else %}{{ id_columns[0] }}{% endif %} values with different answers</span>
+          <span class="related-chart-count">{{ differing_pid_groups|length }} groups</span>
+        </summary>
+        {% if differing_pid_groups %}
+          {% for group in differing_pid_groups %}
+            <details class="duplicate-pid-group" open>
+              <summary>{% if id_columns|length > 1 %}Key: <strong>{{ group.composite_key }}</strong>{% else %}PID {{ group.pid }}{% endif %} · {{ group.rows|length }} rows differ</summary>
+              {% include "duplicate_comparison.html" %}
+            </details>
+          {% endfor %}
+        {% else %}
+          <p class="duplicate-empty">No differing rows share {% if id_columns|length > 1 %}matching combined keys{% else %}a PID{% endif %}.</p>
+        {% endif %}
+      </details>
     {% else %}
-      <p class="duplicate-empty">No PID-like field was detected in this dataset, so duplicate review is unavailable.</p>
+      <p class="duplicate-empty">No identifier or PID-like field was detected in this dataset, so duplicate review is unavailable.</p>
     {% endif %}
   </section>
 

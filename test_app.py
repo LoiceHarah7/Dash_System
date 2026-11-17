@@ -15,6 +15,7 @@ from app import (
     app,
     dashboard_data,
     detect_pid_columns,
+    duplicate_row_indices,
     db,
     find_pid_duplicate_groups,
     find_pid_sequence_gaps,
@@ -1364,6 +1365,107 @@ class StudyDashTests(unittest.TestCase):
             self.assertIn(b'data-snapshot-chart="', resp.data)
             self.assertIn(b"Snapshot", resp.data)
             self.assertIn(b'data-toggle-chart-limit="', resp.data)
+
+    def test_inspect_headers_endpoint(self):
+        csv_bytes = b"PID,Visit_Number,Instance_ID,Survey_Score,Gender\n1,1,1,10,M\n"
+        response = self.client.post(
+            "/api/inspect-headers",
+            data={"file": (io.BytesIO(csv_bytes), "sample.csv")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 200)
+        json_data = response.get_json()
+        self.assertIn("columns", json_data)
+        self.assertEqual(
+            json_data["columns"],
+            ["PID", "Visit_Number", "Instance_ID", "Survey_Score", "Gender"],
+        )
+
+    def test_first_three_columns_clean_mode_and_expected_participants(self):
+        # Study where one PID has multiple visits/instances.
+        # Repeating PID across different visits is NOT duplicate;
+        # only matching (PID, visit, instance) is duplicate.
+        csv_data = (
+            b"PID,visit,instance,score,group\n"
+            b"P101,1,1,80,A\n"
+            b"P101,2,1,85,A\n"  # Same PID, different visit -> Valid visit, NOT duplicate!
+            b"P101,1,1,80,A\n"  # Exactly identical repeat of (P101, 1, 1) -> Identical duplicate
+            b"P102,1,1,90,B\n"
+            b"P102,1,1,95,B\n"  # Same (P102, 1, 1) but different score -> Differing duplicate
+            b"P103,1,1,70,A\n"
+        )
+        response = self.client.post(
+            "/upload",
+            data={
+                "study_name": "Longitudinal Repeat Visits Study",
+                "expected_participants": "300",
+                "clean_mode": "first_three",
+                "file": (io.BytesIO(csv_data), "longitudinal.csv"),
+            },
+            content_type="multipart/form-data",
+            follow_redirects=True,
+        )
+        self.assertEqual(response.status_code, 200)
+
+        with app.app_context():
+            dataset = StudyDataset.query.filter_by(
+                study_name="Longitudinal Repeat Visits Study"
+            ).first()
+            self.assertIsNotNone(dataset)
+            self.assertEqual(dataset.expected_participants, 300)
+            self.assertEqual(dataset.clean_mode, "first_three")
+            self.assertEqual(dataset.clean_columns, ["PID", "visit", "instance"])
+
+            # Verify duplicate detection grouping using the first 3 columns:
+            identical, differing = find_pid_duplicate_groups(
+                dataset, dataset.clean_columns
+            )
+            # Only (P101, 1, 1) is identical duplicate
+            self.assertEqual(len(identical), 1)
+            self.assertIn("P101", identical[0]["composite_key"])
+            self.assertIn("visit: 1", identical[0]["composite_key"])
+
+            # Only (P102, 1, 1) is differing duplicate
+            self.assertEqual(len(differing), 1)
+            self.assertIn("P102", differing[0]["composite_key"])
+
+            # Verify that row 2 (P101, visit 2, instance 1) was NOT treated as a duplicate
+            all_dup_indices = duplicate_row_indices(dataset, dataset.clean_columns)
+            # Row index 1 is P101 visit 2 instance 1 -> must NOT be in duplicates!
+            self.assertNotIn(1, all_dup_indices)
+
+        # Check that dashboard HTML displays the expected participants and unique key
+        self.assertIn(b"Total Participants Expected", response.data)
+        self.assertIn(b"300", response.data)
+        self.assertIn(b"PID + visit + instance", response.data)
+
+    def test_custom_columns_clean_mode(self):
+        csv_data = (
+            b"id_num,site,sample_id,result\n"
+            b"A1,Lilongwe,S1,Positive\n"
+            b"A1,Salima,S1,Positive\n"
+            b"A1,Lilongwe,S1,Positive\n"
+        )
+        self.client.post(
+            "/upload",
+            data={
+                "study_name": "Custom Columns Study",
+                "clean_mode": "custom",
+                "custom_columns": ["id_num", "site"],
+                "file": (io.BytesIO(csv_data), "custom.csv"),
+            },
+            content_type="multipart/form-data",
+        )
+        with app.app_context():
+            dataset = StudyDataset.query.filter_by(
+                study_name="Custom Columns Study"
+            ).first()
+            self.assertEqual(dataset.clean_mode, "custom")
+            self.assertEqual(dataset.clean_columns, ["id_num", "site"])
+            identical, differing = find_pid_duplicate_groups(
+                dataset, dataset.clean_columns
+            )
+            self.assertEqual(len(identical), 1)
 
 
 if __name__ == "__main__":

@@ -73,8 +73,14 @@
 
             <div class="study-card-footer">
               <div class="study-stats-pills">
+                {% if study.expected_participants %}
+                  <span class="stat-pill pill-expected" title="Total expected participants for this study">👥 <strong>{{ "{:,}".format(study.expected_participants) }}</strong> expected</span>
+                {% endif %}
                 <span class="stat-pill"><strong>{{ "{:,}".format(study.rows) }}</strong> rows</span>
                 <span class="stat-pill"><strong>{{ "{:,}".format(study.columns) }}</strong> columns</span>
+                {% if study.clean_columns and study.clean_columns|length > 1 %}
+                  <span class="stat-pill pill-key" title="Key: {{ study.clean_columns|join(' + ') }}">🔑 {{ study.clean_columns|join('+') | truncate(30, True, '…') }}</span>
+                {% endif %}
                 {% if study.duplicates_removed %}
                   <span class="stat-pill pill-cleaned">{{ study.duplicates_removed }} duplicates removed</span>
                 {% endif %}
@@ -102,14 +108,73 @@
       <span class="file-badge">CSV · TSV · XLSX · XLS</span>
     </div>
     <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data">
-      <label class="field-label" for="study_name">Study name</label>
-      <input id="study_name" name="study_name" type="text" maxlength="160" placeholder="e.g. Community Health Survey 2025" required>
+      <div class="field-block">
+        <label class="field-label" for="study_name">Study name</label>
+        <input id="study_name" name="study_name" type="text" maxlength="160" placeholder="e.g. Community Health Survey 2025" required>
+      </div>
+
+      <div class="field-block">
+        <label class="field-label" for="expected_participants">
+          Expected number of participants <span class="optional-badge">optional</span>
+        </label>
+        <input id="expected_participants" name="expected_participants" type="number" min="1" step="1" placeholder="e.g. 500">
+        <p class="field-hint">Target number of participants planned for this study. This will be prominently displayed on your dashboard.</p>
+      </div>
+
       <label class="dropzone" for="file">
         <span class="upload-icon">↑</span>
         <strong id="file-name">Choose a data file to upload</strong>
         <span id="file-details" aria-live="polite">CSV, TSV or Excel · up to 25 MB per request</span>
         <input id="file" name="file" type="file" accept=".csv,.tsv,.xlsx,.xls" required>
       </label>
+
+      {# ── Record identifier & Duplicate detection options ── #}
+      <div class="cleaning-options-card">
+        <div class="cleaning-options-header">
+          <span class="field-label" style="margin-bottom: 2px;">Record Identifier &amp; Duplicate Detection Key</span>
+          <p class="field-hint">
+            Choose which column(s) identify a unique record. Combining columns ensures that participant rows from different visits or instances are not falsely flagged as duplicates.
+          </p>
+        </div>
+
+        <div class="cleaning-radio-group">
+          <label class="cleaning-radio-option">
+            <input type="radio" name="clean_mode" value="pid" id="clean_mode_pid" checked>
+            <div class="radio-body">
+              <span class="radio-label-title">PID column only <span class="radio-badge">Default</span></span>
+              <span class="radio-label-desc">Standard single-visit study: duplicates are detected by participant ID column alone.</span>
+            </div>
+          </label>
+
+          <label class="cleaning-radio-option">
+            <input type="radio" name="clean_mode" value="first_three" id="clean_mode_first_three">
+            <div class="radio-body">
+              <span class="radio-label-title">First 3 columns combined</span>
+              <span class="first-three-cols-badge" id="first-three-cols-display">Select a data file above to preview column names</span>
+              <span class="radio-label-desc">Recommended for studies with visits &amp; instances (e.g. PID + Visit + Instance). Values across all 3 columns combined must not be identical anywhere else.</span>
+            </div>
+          </label>
+
+          <label class="cleaning-radio-option">
+            <input type="radio" name="clean_mode" value="custom" id="clean_mode_custom">
+            <div class="radio-body">
+              <span class="radio-label-title">Custom columns</span>
+              <span class="radio-label-desc">Manually choose which columns combine to form the unique record identifier.</span>
+            </div>
+          </label>
+        </div>
+
+        <div id="custom-columns-container" class="custom-columns-container" style="display: none;">
+          <div class="custom-cols-header">
+            <span class="custom-cols-prompt">Select the columns to combine for duplicate detection:</span>
+            <span class="muted" id="custom-cols-count">0 selected</span>
+          </div>
+          <div id="custom-columns-list" class="custom-columns-chips">
+            <p class="muted-note" id="custom-columns-placeholder">Please select a data file above to load available columns.</p>
+          </div>
+        </div>
+      </div>
+
       <label class="codebook-upload" for="codebook">
         <span class="codebook-icon">⌗</span>
         <span class="codebook-copy"><strong>Study codebook <span>optional</span></strong><small id="codebook-details">CSV or Excel · common code, value, variable, and label columns supported</small></span>
@@ -168,7 +233,15 @@
                     <span class="muted">—</span>
                   {% endif %}
                 </td>
-                <td>{{ "{:,}".format(s.rows) }} rows × {{ s.columns }} cols</td>
+                <td>
+                  <div>{{ "{:,}".format(s.rows) }} rows × {{ s.columns }} cols</div>
+                  {% if s.expected_participants %}
+                    <div class="history-subtext">👥 {{ "{:,}".format(s.expected_participants) }} expected</div>
+                  {% endif %}
+                  {% if s.clean_columns and s.clean_columns|length > 1 %}
+                    <div class="history-subtext">🔑 {{ s.clean_columns|join('+') | truncate(26, True, '…') }}</div>
+                  {% endif %}
+                </td>
                 <td style="text-align: right; white-space: nowrap;">
                   <a class="button small history-open-btn" href="{{ url_for('dashboard', dataset_id=s.id) }}">Open</a>
                   <form method="post" action="{{ url_for('delete_study', dataset_id=s.id) }}" onsubmit="return confirm('Delete &quot;{{ s.study_name }}&quot;?');" style="display:inline;">

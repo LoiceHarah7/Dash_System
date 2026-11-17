@@ -52,6 +52,12 @@ class StudyDataset(db.Model):
     # Optional local path note — set by the user after upload so they can find
     # their copy of the dataset file at any time.
     saved_path = db.Column(db.String(500), nullable=True)
+    # Expected number of study participants entered by user
+    expected_participants = db.Column(db.Integer, nullable=True)
+    # List of column names used to uniquely identify records and detect duplicates
+    clean_columns = db.Column(db.JSON, nullable=True)
+    # Cleaning mode: 'pid', 'first_three', or 'custom'
+    clean_mode = db.Column(db.String(50), nullable=True)
 
 
 class StudyPidSelection(db.Model):
@@ -170,6 +176,30 @@ def read_upload(upload):
     if extension in (".xlsx", ".xls"):
         return pd.read_excel(upload)
     raise ValueError("Upload a CSV or Excel file (.csv, .xlsx, .xls).")
+
+
+def read_upload_headers(upload):
+    filename = getattr(upload, "filename", "") or ""
+    extension = os.path.splitext(filename)[1].lower()
+    if extension in (".csv", ".tsv"):
+        pos = upload.tell() if hasattr(upload, "tell") else None
+        line = upload.readline()
+        if isinstance(line, bytes):
+            line = line.decode("utf-8", errors="ignore")
+        sep = "\t" if "\t" in line else ","
+        if pos is not None and hasattr(upload, "seek"):
+            upload.seek(pos)
+        df = pd.read_csv(upload, sep=sep, nrows=1)
+        if pos is not None and hasattr(upload, "seek"):
+            upload.seek(pos)
+        return make_unique_headers(df.columns)
+    if extension in (".xlsx", ".xls"):
+        pos = upload.tell() if hasattr(upload, "tell") else None
+        df = pd.read_excel(upload, nrows=1)
+        if pos is not None and hasattr(upload, "seek"):
+            upload.seek(pos)
+        return make_unique_headers(df.columns)
+    return []
 
 
 def is_missing(value):
@@ -379,42 +409,96 @@ def find_pid_sequence_gaps(records, pid_columns):
     return gaps_by_column
 
 
-def find_pid_duplicate_groups(dataset, pid_column):
-    pid_columns = set(detect_pid_columns(dataset.column_names))
-    groups_by_pid = {}
+def get_dataset_id_columns(dataset):
+    if getattr(dataset, "clean_columns", None):
+        valid = [c for c in dataset.clean_columns if c in dataset.column_names]
+        if valid:
+            return valid
+    from flask import has_app_context
+    pid_column = None
+    if has_app_context() and getattr(dataset, "id", None) is not None:
+        try:
+            selection = db.session.get(StudyPidSelection, dataset.id)
+            if selection:
+                pid_column = selection.pid_column
+        except Exception:
+            pass
+    candidates = detect_pid_columns(dataset.column_names)
+    if not pid_column and len(candidates) == 1:
+        pid_column = candidates[0]
+    if pid_column and pid_column in dataset.column_names:
+        return [pid_column]
+    return candidates[:1] if candidates else []
+
+
+def find_pid_duplicate_groups(dataset, pid_columns):
+    if not pid_columns:
+        return [], []
+    if isinstance(pid_columns, str):
+        id_cols = [pid_columns]
+    else:
+        id_cols = [c for c in pid_columns if c in dataset.column_names]
+    if not id_cols:
+        return [], []
+
+    excluded_diff_cols = set(detect_pid_columns(dataset.column_names)).union(id_cols)
+    groups_by_key = {}
+
     for index, record in enumerate(dataset.records):
-        pid_value = record.get(pid_column)
-        if is_missing(pid_value) or not str(pid_value).strip():
+        key_parts = []
+        has_any_val = False
+        display_parts = []
+        for col in id_cols:
+            val = record.get(col)
+            if not is_missing(val) and str(val).strip():
+                has_any_val = True
+                norm = normalize_code(val)
+                norm_str = norm.casefold() if norm is not None else str(val).strip().casefold()
+                key_parts.append(norm_str)
+                display_parts.append(f"{col}: {val}")
+            else:
+                key_parts.append("")
+                display_parts.append(f"{col}: —")
+
+        if not has_any_val:
             continue
-        normalized_pid = normalize_code(pid_value)
-        if normalized_pid is None:
-            continue
-        normalized_pid = normalized_pid.casefold()
-        groups_by_pid.setdefault(normalized_pid, []).append(
-            {"index": index, "record": record, "pid": pid_value}
+
+        composite_key = tuple(key_parts)
+        primary_pid = record.get(id_cols[0])
+        display_key = " · ".join(display_parts) if len(id_cols) > 1 else str(primary_pid)
+
+        groups_by_key.setdefault(composite_key, []).append(
+            {
+                "index": index,
+                "record": record,
+                "pid": primary_pid,
+                "composite_key": display_key,
+            }
         )
 
     identical = []
     differing = []
-    for rows in groups_by_pid.values():
+    for rows in groups_by_key.values():
         if len(rows) < 2:
             continue
         signatures = {
             tuple(
                 (column, repr(row["record"].get(column)))
                 for column in dataset.column_names
-                if column not in pid_columns
+                if column not in excluded_diff_cols
             )
             for row in rows
         }
         different_columns = [
             column
             for column in dataset.column_names
-            if column not in pid_columns
+            if column not in excluded_diff_cols
             and len({repr(row["record"].get(column)) for row in rows}) > 1
         ]
         group = {
             "pid": rows[0]["pid"],
+            "composite_key": rows[0]["composite_key"],
+            "id_columns": id_cols,
             "rows": rows,
             "different_columns": different_columns,
         }
@@ -768,8 +852,27 @@ def codebook_labels(codebook, column):
     return codebook.get("lists", {}).get(list_name, {}) if list_name else {}
 
 
-def extract_row_pids(frame):
-    pid_cols = detect_pid_columns(frame.columns)
+def extract_row_pids(frame, id_columns=None):
+    if id_columns and len(id_columns) > 1:
+        valid_cols = [c for c in id_columns if c in frame.columns]
+        if valid_cols:
+            pids = []
+            for idx, row in frame.iterrows():
+                parts = [
+                    str(row.get(col)).strip()
+                    for col in valid_cols
+                    if not is_missing(row.get(col))
+                    and str(row.get(col)).strip()
+                    and str(row.get(col)).strip().lower() != "nan"
+                ]
+                pids.append(" / ".join(parts) if parts else f"Row {idx + 1}")
+            return pd.Series(pids, index=frame.index)
+
+    pid_cols = (
+        [c for c in id_columns if c in frame.columns]
+        if (id_columns and len(id_columns) == 1)
+        else detect_pid_columns(frame.columns)
+    )
     pids = []
     for idx, row in frame.iterrows():
         pid_val = None
@@ -970,7 +1073,8 @@ def dashboard_data(dataset, codebook=None):
         dataset.id,
         question_groups,
     )
-    row_pids = extract_row_pids(frame)
+    id_columns = get_dataset_id_columns(dataset)
+    row_pids = extract_row_pids(frame, id_columns)
     charts = []
     for question_name, question_columns in question_groups.items():
         if len(question_columns) > 1:
@@ -1169,12 +1273,18 @@ def build_report(dataset):
         ("Study", dataset.study_name),
         ("Source file", dataset.filename),
         ("Uploaded", dataset.uploaded_at.strftime("%Y-%m-%d %H:%M UTC")),
+    ]
+    if getattr(dataset, "expected_participants", None):
+        summary_rows.append(("Total participants expected", dataset.expected_participants))
+    if getattr(dataset, "clean_columns", None):
+        summary_rows.append(("Duplicate identification columns", ", ".join(dataset.clean_columns)))
+    summary_rows.extend([
         ("Rows in cleaned output", dataset.rows),
         ("Columns in cleaned output", dataset.columns),
         ("Duplicate rows removed automatically", dataset.duplicates_removed),
         ("Duplicate PID groups reviewed", "See dashboard duplicate review"),
         ("Missing values filled", dataset.missing_values_filled),
-    ]
+    ])
     if codebook:
         summary_rows.extend(
             [
@@ -1275,12 +1385,18 @@ def build_cleaning_report_only_workbook(dataset):
         ("Study", dataset.study_name),
         ("Source file", dataset.filename),
         ("Uploaded", dataset.uploaded_at.strftime("%Y-%m-%d %H:%M UTC")),
+    ]
+    if getattr(dataset, "expected_participants", None):
+        summary_rows.append(("Total participants expected", dataset.expected_participants))
+    if getattr(dataset, "clean_columns", None):
+        summary_rows.append(("Duplicate identification columns", ", ".join(dataset.clean_columns)))
+    summary_rows.extend([
         ("Rows in cleaned output", dataset.rows),
         ("Columns in cleaned output", dataset.columns),
         ("Duplicate rows removed automatically", dataset.duplicates_removed),
         ("Duplicate PID groups reviewed", "See dashboard duplicate review"),
         ("Missing values filled", dataset.missing_values_filled),
-    ]
+    ])
     if codebook:
         summary_rows.extend(
             [
@@ -1490,6 +1606,20 @@ def upload():
 
     try:
         raw = read_upload(file)
+        raw_expected = request.form.get("expected_participants", "").strip()
+        expected_participants = None
+        if raw_expected:
+            try:
+                exp_val = int(raw_expected)
+                if exp_val > 0:
+                    expected_participants = exp_val
+            except ValueError:
+                expected_participants = None
+
+        clean_mode = request.form.get("clean_mode", "pid").strip().lower()
+        if clean_mode not in {"pid", "first_three", "custom"}:
+            clean_mode = "pid"
+
         codebook_file = request.files.get("codebook")
         codebook_data = None
         categorical_columns = set()
@@ -1501,6 +1631,12 @@ def upload():
             for column in columns
         }
         preserve_missing_columns.update(detect_pid_columns(raw.columns))
+        if clean_mode == "first_three" and len(raw.columns) >= 3:
+            preserve_missing_columns.update(raw.columns[:3])
+        elif clean_mode == "custom":
+            custom_selected = request.form.getlist("custom_columns")
+            preserve_missing_columns.update(custom_selected)
+
         if codebook_file is not None and codebook_file.filename:
             raw.columns = make_unique_headers(raw.columns)
             variables = parse_codebook(codebook_file, raw)
@@ -1552,6 +1688,20 @@ def upload():
         flash("The uploaded file has no usable rows or columns.", "error")
         return redirect(url_for("index"))
 
+    clean_columns = None
+    if clean_mode == "first_three":
+        clean_columns = list(cleaned.columns[:3]) if len(cleaned.columns) >= 3 else list(cleaned.columns)
+    elif clean_mode == "custom":
+        custom_selected = request.form.getlist("custom_columns")
+        valid_custom = [c for c in custom_selected if c in cleaned.columns]
+        if valid_custom:
+            clean_columns = valid_custom
+        else:
+            clean_columns = list(cleaned.columns[:3]) if len(cleaned.columns) >= 3 else list(cleaned.columns)
+    else:  # "pid"
+        detected_pid = detect_pid_columns(cleaned.columns)
+        clean_columns = [detected_pid[0]] if detected_pid else None
+
     dataset = StudyDataset(
         study_name=study_name,
         filename=os.path.basename(file.filename),
@@ -1561,6 +1711,9 @@ def upload():
         missing_values_filled=missing,
         column_names=list(cleaned.columns),
         records=records,
+        expected_participants=expected_participants,
+        clean_columns=clean_columns,
+        clean_mode=clean_mode,
     )
     db.session.add(dataset)
     try:
@@ -1606,7 +1759,14 @@ def upload():
         if codebook_data is not None:
             codebook_data.dataset_id = dataset.id
             db.session.add(codebook_data)
-        if len(detected_pid_columns) == 1:
+        if clean_columns and len(clean_columns) == 1 and clean_columns[0] in detected_pid_columns:
+            db.session.add(
+                StudyPidSelection(
+                    dataset_id=dataset.id,
+                    pid_column=clean_columns[0],
+                )
+            )
+        elif len(detected_pid_columns) == 1:
             db.session.add(
                 StudyPidSelection(
                     dataset_id=dataset.id,
@@ -1635,14 +1795,17 @@ def dashboard(dataset_id):
     codebook_data = codebook.variables if codebook else None
     charts, preview, all_dataset_pids = dashboard_data(dataset, codebook_data)
     chart_sections = group_related_charts(charts)
+    id_columns = get_dataset_id_columns(dataset)
     pid_candidates = detect_pid_columns(dataset.column_names)
     pid_selection = db.session.get(StudyPidSelection, dataset.id)
     pid_column = pid_selection.pid_column if pid_selection else None
     if pid_column not in pid_candidates:
         pid_column = pid_candidates[0] if len(pid_candidates) == 1 else None
+    if not id_columns and pid_column:
+        id_columns = [pid_column]
     identical_pid_groups, differing_pid_groups = (
-        find_pid_duplicate_groups(dataset, pid_column)
-        if pid_column
+        find_pid_duplicate_groups(dataset, id_columns)
+        if id_columns
         else ([], [])
     )
     missing_pid_rows = [
@@ -1726,6 +1889,7 @@ def dashboard(dataset_id):
         codebook=codebook,
         charts=charts,
         chart_sections=chart_sections,
+        id_columns=id_columns,
         pid_candidates=pid_candidates,
         pid_column=pid_column,
         identical_pid_groups=identical_pid_groups,
@@ -1748,7 +1912,9 @@ def dashboard(dataset_id):
     )
 
 
-def duplicate_row_indices(dataset, pid_column):
+def duplicate_row_indices(dataset, pid_column=None):
+    if pid_column is None:
+        pid_column = get_dataset_id_columns(dataset)
     identical, differing = find_pid_duplicate_groups(dataset, pid_column)
     return {
         row["index"]
@@ -1786,13 +1952,9 @@ def edit_duplicate_row(dataset_id):
     dataset = db.session.get(StudyDataset, dataset_id)
     if dataset is None:
         abort(404)
-    selection = db.session.get(StudyPidSelection, dataset.id)
-    pid_column = selection.pid_column if selection else None
-    candidates = detect_pid_columns(dataset.column_names)
-    if not pid_column and len(candidates) == 1:
-        pid_column = candidates[0]
-    if pid_column not in candidates:
-        abort(400, "Choose a PID column before editing duplicate rows.")
+    id_columns = get_dataset_id_columns(dataset)
+    if not id_columns:
+        abort(400, "Choose an ID or PID column before editing duplicate rows.")
 
     try:
         row_index = int(request.form.get("row_index", ""))
@@ -1803,9 +1965,9 @@ def edit_duplicate_row(dataset_id):
         row_index < 0
         or row_index >= len(dataset.records)
         or column not in dataset.column_names
-        or row_index not in duplicate_row_indices(dataset, pid_column)
+        or row_index not in duplicate_row_indices(dataset, id_columns)
     ):
-        abort(400, "Choose a field and row from the PID duplicate review.")
+        abort(400, "Choose a field and row from the duplicate review.")
 
     records = list(dataset.records)
     record = dict(records[row_index])
@@ -1833,19 +1995,15 @@ def drop_duplicate_row(dataset_id):
     dataset = db.session.get(StudyDataset, dataset_id)
     if dataset is None:
         abort(404)
-    selection = db.session.get(StudyPidSelection, dataset.id)
-    pid_column = selection.pid_column if selection else None
-    candidates = detect_pid_columns(dataset.column_names)
-    if not pid_column and len(candidates) == 1:
-        pid_column = candidates[0]
-    if pid_column not in candidates:
-        abort(400, "Choose a PID column before dropping duplicate rows.")
+    id_columns = get_dataset_id_columns(dataset)
+    if not id_columns:
+        abort(400, "Choose an ID or PID column before dropping duplicate rows.")
     try:
         row_index = int(request.form.get("row_index", ""))
     except ValueError:
         abort(400, "A valid duplicate row index is required.")
-    if row_index not in duplicate_row_indices(dataset, pid_column):
-        abort(400, "Only rows shown in the PID duplicate review can be dropped.")
+    if row_index not in duplicate_row_indices(dataset, id_columns):
+        abort(400, "Only rows shown in the duplicate review can be dropped.")
 
     records = list(dataset.records)
     records.pop(row_index)
@@ -2178,8 +2336,35 @@ def clear_all_history():
     return redirect(url_for("index"))
 
 
+@app.route("/api/inspect-headers", methods=["POST"])
+def inspect_headers():
+    file = request.files.get("file")
+    if file is None or not file.filename:
+        return {"columns": []}, 400
+    try:
+        headers = read_upload_headers(file)
+        return {"columns": headers}
+    except Exception as error:
+        app.logger.warning("inspect_headers error: %s", error)
+        return {"columns": [], "error": str(error)}, 200
+
+
 with app.app_context():
     db.create_all()
+    try:
+        from sqlalchemy import inspect, text
+        inspector = inspect(db.engine)
+        existing_cols = {c["name"] for c in inspector.get_columns("study_dataset")}
+        with db.engine.connect() as conn:
+            if "expected_participants" not in existing_cols:
+                conn.execute(text("ALTER TABLE study_dataset ADD COLUMN expected_participants INTEGER"))
+            if "clean_columns" not in existing_cols:
+                conn.execute(text("ALTER TABLE study_dataset ADD COLUMN clean_columns JSON"))
+            if "clean_mode" not in existing_cols:
+                conn.execute(text("ALTER TABLE study_dataset ADD COLUMN clean_mode VARCHAR(50)"))
+            conn.commit()
+    except Exception as e:
+        app.logger.warning("Auto-migration note: %s", e)
 
 
 if __name__ == "__main__":
