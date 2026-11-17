@@ -1,9 +1,21 @@
 const fileInput = document.getElementById("file");
 const firstThreeDisplay = document.getElementById("first-three-cols-display");
+const firstThreeRow = document.getElementById("first-three-cols-row");
+const firstCol1 = document.getElementById("first-col-1");
+const firstCol2 = document.getElementById("first-col-2");
+const firstCol3 = document.getElementById("first-col-3");
 const customColsContainer = document.getElementById("custom-columns-container");
 const customColsList = document.getElementById("custom-columns-list");
 const customColsCount = document.getElementById("custom-cols-count");
+const customColsSearchInput = document.getElementById("custom-cols-search-input");
+const btnExpandCustomCols = document.getElementById("btn-expand-custom-cols");
+const customColsExpandLabel = document.getElementById("custom-cols-expand-label");
+const customColsViewCount = document.getElementById("custom-cols-view-count");
+const customColsFooter = document.getElementById("custom-cols-footer");
 const cleanModeRadios = document.querySelectorAll('input[name="clean_mode"]');
+
+let allLoadedColumns = [];
+let isCustomColsExpanded = false;
 
 function parseSimpleCsvHeaders(firstLine, sep) {
   const result = [];
@@ -32,23 +44,82 @@ function updateCustomColsCount() {
   customColsCount.textContent = `${checked.length} selected`;
 }
 
+function applyCustomColsFilter() {
+  if (!customColsList) return;
+  const query = (customColsSearchInput?.value || "").trim().toLowerCase();
+  const chips = customColsList.querySelectorAll(".custom-col-chip");
+  let matchCount = 0;
+
+  chips.forEach((chip) => {
+    const colName = chip.dataset.colName?.toLowerCase() || "";
+    const isMatch = !query || colName.includes(query);
+    const index = parseInt(chip.dataset.colIndex, 10);
+
+    if (!isMatch) {
+      chip.style.display = "none";
+    } else {
+      matchCount++;
+      if (query) {
+        // In search mode, show all matches
+        chip.style.display = "inline-flex";
+      } else {
+        // In browse mode, respect pagination (first 10 vs all)
+        if (isCustomColsExpanded || index < 10) {
+          chip.style.display = "inline-flex";
+        } else {
+          chip.style.display = "none";
+        }
+      }
+    }
+  });
+
+  if (customColsViewCount) {
+    if (query) {
+      customColsViewCount.textContent = `Found ${matchCount} of ${allLoadedColumns.length} columns`;
+    } else if (isCustomColsExpanded) {
+      customColsViewCount.textContent = `Showing all ${allLoadedColumns.length} columns`;
+    } else {
+      const shown = Math.min(10, allLoadedColumns.length);
+      customColsViewCount.textContent = `Showing first ${shown} of ${allLoadedColumns.length} columns`;
+    }
+  }
+}
+
 function renderColumnChoices(columns) {
   if (!columns || !columns.length) return;
+  allLoadedColumns = columns;
 
-  // 1. Update First 3 Columns display
+  // 1. Update First 3 Columns Row Style
+  const first3 = columns.slice(0, 3);
+  if (firstCol1) firstCol1.textContent = first3[0] || "Column 1";
+  if (firstCol2) firstCol2.textContent = first3[1] || "Column 2";
+  if (firstCol3) firstCol3.textContent = first3[2] || "Column 3";
+
+  if (firstThreeRow) {
+    firstThreeRow.classList.add("active-row");
+  }
   if (firstThreeDisplay) {
-    const first3 = columns.slice(0, 3);
-    firstThreeDisplay.innerHTML = `<strong>Columns:</strong> <code>${first3.map(c => escapeHtml(c)).join('</code> + <code>')}</code>`;
+    firstThreeDisplay.textContent = `First 3 columns detected from ${fileInput?.files?.[0]?.name || "file"}`;
     firstThreeDisplay.classList.add("loaded");
   }
 
-  // 2. Populate Custom Columns Checkboxes
+  // 2. Populate Custom Columns with Selectable Check Icon
   if (customColsList) {
     customColsList.innerHTML = "";
+    isCustomColsExpanded = false;
+
     columns.forEach((col, idx) => {
       const chip = document.createElement("label");
       chip.className = "custom-col-chip";
-      
+      chip.dataset.colName = col;
+      chip.dataset.colIndex = idx;
+      if (idx >= 10) {
+        chip.classList.add("custom-col-extra");
+        chip.style.display = "none";
+      } else {
+        chip.style.display = "inline-flex";
+      }
+
       const chk = document.createElement("input");
       chk.type = "checkbox";
       chk.name = "custom_columns";
@@ -56,15 +127,56 @@ function renderColumnChoices(columns) {
       if (idx < 3) chk.checked = true;
       chk.addEventListener("change", updateCustomColsCount);
 
-      const span = document.createElement("span");
-      span.textContent = col;
+      const checkIcon = document.createElement("span");
+      checkIcon.className = "chip-check-icon";
+      checkIcon.innerHTML = "✓";
+
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "chip-name";
+      nameSpan.textContent = col;
 
       chip.appendChild(chk);
-      chip.appendChild(span);
+      chip.appendChild(checkIcon);
+      chip.appendChild(nameSpan);
       customColsList.appendChild(chip);
     });
+
     updateCustomColsCount();
+
+    // Setup expand button & footer
+    if (customColsFooter) {
+      customColsFooter.style.display = columns.length > 10 ? "flex" : "none";
+    }
+    if (btnExpandCustomCols) {
+      btnExpandCustomCols.hidden = columns.length <= 10;
+      if (customColsExpandLabel) {
+        customColsExpandLabel.textContent = `Show all ${columns.length} columns ▾`;
+      }
+    }
+    if (customColsViewCount) {
+      customColsViewCount.textContent = `Showing first ${Math.min(10, columns.length)} of ${columns.length} columns`;
+    }
   }
+}
+
+// Expand/Collapse Custom Columns
+if (btnExpandCustomCols) {
+  btnExpandCustomCols.addEventListener("click", () => {
+    isCustomColsExpanded = !isCustomColsExpanded;
+    if (customColsExpandLabel) {
+      customColsExpandLabel.textContent = isCustomColsExpanded
+        ? "Show first 10 columns ▴"
+        : `Show all ${allLoadedColumns.length} columns ▾`;
+    }
+    applyCustomColsFilter();
+  });
+}
+
+// Search Filter Input
+if (customColsSearchInput) {
+  customColsSearchInput.addEventListener("input", () => {
+    applyCustomColsFilter();
+  });
 }
 
 function escapeHtml(str) {
@@ -96,9 +208,13 @@ if (fileInput) {
       fileName.textContent = "Choose a data file to upload";
       fileDetails.textContent = "CSV or Excel · up to 25 MB";
       if (firstThreeDisplay) {
-        firstThreeDisplay.textContent = "Select a data file above to preview column names";
+        firstThreeDisplay.textContent = "Upload a file above to load column names";
         firstThreeDisplay.classList.remove("loaded");
       }
+      if (firstCol1) firstCol1.textContent = "Column 1";
+      if (firstCol2) firstCol2.textContent = "Column 2";
+      if (firstCol3) firstCol3.textContent = "Column 3";
+      if (firstThreeRow) firstThreeRow.classList.remove("active-row");
       return;
     }
 

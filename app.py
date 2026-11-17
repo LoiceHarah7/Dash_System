@@ -238,35 +238,60 @@ def extract_option_match(column):
 
 
 def is_excluded_visualization_column(column):
-    spaced_name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", str(column))
+    col_str = str(column).strip()
+    col_lower = col_str.casefold()
+    col_clean = re.sub(r"[^a-z0-9]+", "", col_lower)
+
+    # Exclude system-generated technical metadata
+    if col_clean in {
+        "id",
+        "rowid",
+        "uuid",
+        "guid",
+        "deviceid",
+        "device",
+        "submissiondate",
+        "submission",
+        "instanceid",
+        "metadata",
+        "meta",
+        "phonenumber",
+        "simserial",
+    }:
+        return True
+
+    # Exclude primary participant ID columns
+    if col_clean in {
+        "pid",
+        "participantid",
+        "subjectid",
+        "respondentid",
+    } or col_lower.startswith("pid_") or col_lower.startswith("pid-"):
+        return True
+
+    spaced_name = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", col_str)
     tokens = set(re.findall(r"[a-z0-9]+", spaced_name.casefold()))
     excluded_tokens = {
-        "comment",
-        "comments",
-        "description",
         "device",
-        "email",
+        "deviceid",
         "guid",
-        "id",
-        "instance",
-        "meta",
+        "instanceid",
         "metadata",
-        "note",
-        "notes",
-        "pid",
-        "remark",
-        "remarks",
         "submission",
+        "submissiondate",
         "uuid",
-        "username",
     }
     starts_with_admin_prefix = re.match(
-        r"^(?:start|end|today)(?:[_\s]|$)", str(column).casefold()
+        r"^(?:start|end|today)(?:[_\s]|$)", col_lower
     )
+    is_field_notes = "field_notes" in col_lower or "notes" in tokens
+    is_other_specify = col_lower.startswith("other_") or col_lower.startswith("other ")
+
     return (
         bool(tokens.intersection(excluded_tokens))
         or starts_with_admin_prefix is not None
-        or str(column).casefold().startswith("other_")
+        or is_field_notes
+        or is_other_specify
     )
 
 
@@ -464,8 +489,16 @@ def find_pid_duplicate_groups(dataset, pid_columns):
             continue
 
         composite_key = tuple(key_parts)
-        primary_pid = record.get(id_cols[0])
-        display_key = " · ".join(display_parts) if len(id_cols) > 1 else str(primary_pid)
+        if len(id_cols) > 1:
+            combined_value = " / ".join(
+                str(record.get(col)).strip()
+                for col in id_cols
+                if not is_missing(record.get(col)) and str(record.get(col)).strip()
+            ) or " · ".join(display_parts)
+        else:
+            combined_value = str(record.get(id_cols[0]))
+        primary_pid = combined_value
+        display_key = combined_value
 
         groups_by_key.setdefault(composite_key, []).append(
             {

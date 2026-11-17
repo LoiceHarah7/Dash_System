@@ -149,9 +149,18 @@
           <label class="cleaning-radio-option">
             <input type="radio" name="clean_mode" value="first_three" id="clean_mode_first_three">
             <div class="radio-body">
-              <span class="radio-label-title">First 3 columns combined</span>
-              <span class="first-three-cols-badge" id="first-three-cols-display">Select a data file above to preview column names</span>
-              <span class="radio-label-desc">Recommended for studies with visits &amp; instances (e.g. PID + Visit + Instance). Values across all 3 columns combined must not be identical anywhere else.</span>
+              <div class="radio-title-row">
+                <span class="radio-label-title">First 3 columns combined</span>
+                <span class="radio-badge pill-blue">Repeat Visits / Instances</span>
+              </div>
+              <div class="first-three-row" id="first-three-cols-row">
+                <div class="col-pill-step"><span class="col-step-num">1</span><span class="col-step-name" id="first-col-1">Column 1</span></div>
+                <span class="col-row-divider">+</span>
+                <div class="col-pill-step"><span class="col-step-num">2</span><span class="col-step-name" id="first-col-2">Column 2</span></div>
+                <span class="col-row-divider">+</span>
+                <div class="col-pill-step"><span class="col-step-num">3</span><span class="col-step-name" id="first-col-3">Column 3</span></div>
+              </div>
+              <span class="first-three-hint" id="first-three-cols-display">Upload a file above to load column names</span>
             </div>
           </label>
 
@@ -159,18 +168,30 @@
             <input type="radio" name="clean_mode" value="custom" id="clean_mode_custom">
             <div class="radio-body">
               <span class="radio-label-title">Custom columns</span>
-              <span class="radio-label-desc">Manually choose which columns combine to form the unique record identifier.</span>
+              <span class="radio-label-desc">Choose specific columns to combine into one identifier for duplicate detection.</span>
             </div>
           </label>
         </div>
 
         <div id="custom-columns-container" class="custom-columns-container" style="display: none;">
           <div class="custom-cols-header">
-            <span class="custom-cols-prompt">Select the columns to combine for duplicate detection:</span>
-            <span class="muted" id="custom-cols-count">0 selected</span>
+            <div class="custom-cols-title-wrap">
+              <span class="custom-cols-prompt">Select custom columns to combine:</span>
+              <span class="muted" id="custom-cols-count">0 selected</span>
+            </div>
+            <div class="custom-cols-search-box">
+              <span class="search-icon">🔍</span>
+              <input type="text" id="custom-cols-search-input" placeholder="Search columns by name…" autocomplete="off">
+            </div>
           </div>
           <div id="custom-columns-list" class="custom-columns-chips">
             <p class="muted-note" id="custom-columns-placeholder">Please select a data file above to load available columns.</p>
+          </div>
+          <div class="custom-cols-footer" id="custom-cols-footer" style="display: none;">
+            <button type="button" class="button small custom-cols-expand-btn" id="btn-expand-custom-cols">
+              <span>⤢</span> <span id="custom-cols-expand-label">Show all columns ▾</span>
+            </button>
+            <span class="custom-cols-view-count" id="custom-cols-view-count">Showing first 10 columns</span>
           </div>
         </div>
       </div>

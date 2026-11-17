@@ -1422,12 +1422,11 @@ class StudyDashTests(unittest.TestCase):
             )
             # Only (P101, 1, 1) is identical duplicate
             self.assertEqual(len(identical), 1)
-            self.assertIn("P101", identical[0]["composite_key"])
-            self.assertIn("visit: 1", identical[0]["composite_key"])
+            self.assertEqual(identical[0]["composite_key"], "P101 / 1 / 1")
 
             # Only (P102, 1, 1) is differing duplicate
             self.assertEqual(len(differing), 1)
-            self.assertIn("P102", differing[0]["composite_key"])
+            self.assertEqual(differing[0]["composite_key"], "P102 / 1 / 1")
 
             # Verify that row 2 (P101, visit 2, instance 1) was NOT treated as a duplicate
             all_dup_indices = duplicate_row_indices(dataset, dataset.clean_columns)
@@ -1466,6 +1465,46 @@ class StudyDashTests(unittest.TestCase):
                 dataset, dataset.clean_columns
             )
             self.assertEqual(len(identical), 1)
+
+    def test_charts_generated_without_codebook(self):
+        # A dataset uploaded without a codebook should still generate charts for all its eligible columns
+        csv_data = (
+            b"PID,visit,instance,site_id,clinic,outcome\n"
+            b"P1,1,1,S1,Central,Recovered\n"
+            b"P1,2,1,S1,Central,Recovered\n"
+            b"P2,1,1,S2,North,Ongoing\n"
+            b"P3,1,1,S2,North,Recovered\n"
+        )
+        response = self.client.post(
+            "/upload",
+            data={
+                "study_name": "No Codebook Study",
+                "clean_mode": "first_three",
+                "file": (io.BytesIO(csv_data), "no_codebook.csv"),
+            },
+            content_type="multipart/form-data",
+            follow_redirects=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        with app.app_context():
+            dataset = StudyDataset.query.filter_by(
+                study_name="No Codebook Study"
+            ).first()
+            charts, preview, all_pids = dashboard_data(dataset)
+            chart_names = [c["name"] for c in charts]
+            # Verify that columns like site_id, clinic, outcome, visit, instance are charted
+            self.assertIn("site_id", chart_names)
+            self.assertIn("clinic", chart_names)
+            self.assertIn("outcome", chart_names)
+            self.assertIn("visit", chart_names)
+            self.assertIn("instance", chart_names)
+            for chart in charts:
+                self.assertTrue(
+                    len(chart["variants"]) > 0,
+                    f"Chart for {chart['name']} must have variants",
+                )
+        # Dashboard must not say "No chartable columns found"
+        self.assertNotIn(b"No chartable columns found", response.data)
 
 
 if __name__ == "__main__":

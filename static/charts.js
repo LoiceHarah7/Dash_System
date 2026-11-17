@@ -464,7 +464,8 @@ function renderLanguage() {
   });
   document.querySelectorAll("[data-category-filter]").forEach((select) => {
     const chartIndex = Number(select.dataset.categoryFilter);
-    const variant = chartData[chartIndex].variants[0];
+    const variant = chartData[chartIndex]?.variants?.[0];
+    if (!variant) return;
     const selectedValue = select.value;
     select.replaceChildren();
     const all = document.createElement("option");
