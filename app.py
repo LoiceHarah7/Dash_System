@@ -58,6 +58,8 @@ class StudyDataset(db.Model):
     clean_columns = db.Column(db.JSON, nullable=True)
     # Cleaning mode: 'pid', 'first_three', or 'custom'
     clean_mode = db.Column(db.String(50), nullable=True)
+    # Maps sanitized header -> original header (for display only)
+    original_headers = db.Column(db.JSON, nullable=True)
 
 
 class StudyPidSelection(db.Model):
@@ -105,8 +107,186 @@ def make_unique_headers(headers):
     return result
 
 
+def _normalize_header_token(name):
+    """Lowercase, replace non-alphanumerics with _, collapse runs, strip edges."""
+    s = re.sub(r"[^a-z0-9]+", "_", str(name).lower()).strip("_")
+    return re.sub(r"_+", "_", s)
+
+
+def _looks_like_display_header(col):
+    """True if this header looks like a human display label that needs slugification.
+
+    A header needs slugification only if it contains characters that break
+    downstream parsing: spaces, question marks, parentheses, slashes, commas,
+    or other punctuation beyond underscore/hyphen.
+
+    Headers that are already identifier-safe (letters, digits, underscores,
+    hyphens — with or without mixed case) are left exactly as-is.  This keeps
+    PID, Visit_Number, houseHold_items, Gender, etc. untouched.
+    """
+    if not isinstance(col, str):
+        return False
+    s = col.strip()
+    if not s:
+        return False
+    # Identifier-safe: only letters, digits, underscores, hyphens, dots
+    # Mixed case is fine — we do not force lowercase on well-formed names.
+    if re.fullmatch(r"[A-Za-z0-9_./-]+", s):
+        return False
+    # Contains at least one character that is NOT identifier-safe
+    # (space, ?, (, ), comma, colon, etc.) → needs slugification
+    return True
+
+
+def _looks_like_machine_name_row(values):
+    """True if a row of values looks like a RedCap machine-name header row.
+
+    Requirements (stricter than before to avoid false positives):
+      - At least 3 non-null values are checked.
+      - 80%+ of non-null values match the snake_case pattern.
+      - At least one value contains an underscore (bare digits / single letters
+        are too ambiguous and must not be promoted to column names).
+    """
+    hits, checked = 0, 0
+    has_underscore = False
+    for v in values:
+        if v is None or pd.isna(v):
+            continue
+        s = str(v).strip()
+        if not s or s.lower() == "nan":
+            continue
+        checked += 1
+        if re.fullmatch(r"[a-z][a-z0-9_]*", s):
+            hits += 1
+            if "_" in s:
+                has_underscore = True
+    return checked >= 3 and hits / checked >= 0.8 and has_underscore
+
+
+def sanitize_headers_for_upload(df):
+    """Normalize headers so detection and charting work, whether the source is
+    a machine export or a labeled export.
+
+    Steps:
+      - Detect RedCap two-row header (row 2 = machine names). If present,
+        re-read the dataframe with header=1 and drop the display-label row.
+      - For each remaining column header, if it looks like a display label,
+        slugify it to lowercase snake_case. Keep original header for later
+        display if desired via a mapping stored on the DataFrame.
+
+    Returns (df, header_map) where header_map: safe_header -> original_header.
+    """
+    # Detect two-row header
+    try:
+        first_row = df.iloc[0].tolist() if len(df) > 0 else []
+    except Exception:
+        first_row = []
+
+    if _looks_like_machine_name_row(first_row):
+        # Row 1 became data rows of machine names; rebuild with them as header.
+        # All data rows should shift: header becomes first_row, data is df.iloc[1:]
+        new_cols = [
+            str(c).strip() if c and not pd.isna(c) else f"col_{i}"
+            for i, c in enumerate(first_row)
+        ]
+        df = df.iloc[1:].copy()
+        df.columns = new_cols
+        df = df.reset_index(drop=True)
+
+    header_map = {}
+    new_cols = []
+    seen = {}
+    for i, col in enumerate(df.columns):
+        orig = str(col) if col is not None else f"col_{i}"
+        if _looks_like_display_header(orig):
+            safe = _normalize_header_token(orig) or f"col_{i}"
+            if safe and safe[0].isdigit():
+                safe = f"col_{safe}"
+        else:
+            safe = str(orig).strip() or f"col_{i}"
+
+        # Deduplicate
+        if safe in seen:
+            seen[safe] += 1
+            safe = f"{safe}_{seen[safe]}"
+        else:
+            seen[safe] = 1
+
+        header_map[safe] = orig
+        new_cols.append(safe)
+
+    df.columns = new_cols
+
+    # Rename first plausible PID-ish column to 'pid' for downstream detection
+    pid_like = [
+        c
+        for c in df.columns
+        if c
+        in {
+            "pid",
+            "bcc_pid",
+            "participant_id",
+            "patient_id",
+            "subject_id",
+            "respondent_id",
+        }
+    ]
+    if not pid_like:
+        # Look for '*_pid' or '*_id' where the stem contains patient|participant|subject|respondent|bcc
+        for c in df.columns:
+            if c.endswith("_pid") or c.endswith("_id"):
+                stem = c.rsplit("_", 1)[0]
+                if any(
+                    kw in stem
+                    for kw in (
+                        "patient",
+                        "participant",
+                        "subject",
+                        "respondent",
+                        "bcc",
+                    )
+                ):
+                    pid_like.append(c)
+                    break
+    if pid_like and pid_like[0] != "pid":
+        df = df.rename(columns={pid_like[0]: "pid"})
+        header_map["pid"] = header_map.pop(pid_like[0], pid_like[0])
+
+    return df, header_map
+
+
+def is_personal_or_date_column(column, series=None, pid_columns=None):
+    """Return True for columns that hold personal names, dates, DOB, or
+    contact details so they are NEVER filled with the global mode value.
+    PID columns are explicitly excluded — they are handled separately."""
+    col_str = str(column).strip()
+    col_low = col_str.lower().replace(" ", "_").replace("-", "_")
+
+    if pid_columns and (column in pid_columns or col_str in pid_columns):
+        return False
+
+    personal_keywords = {
+        "first_name", "firstname", "given_name", "givenname",
+        "last_name", "lastname", "surname", "family_name", "familyname",
+        "middle_name", "middlename", "full_name", "fullname", "name",
+        "dob", "date_of_birth", "dateofbirth", "birth_date", "birthdate",
+        "birth_year", "year_of_birth",
+        "phone", "phone_number", "telephone", "mobile", "email",
+        "address", "street", "postcode", "zip", "national_id", "nid",
+        "passport", "id_number",
+    }
+    if col_low in personal_keywords:
+        return True
+    for kw in ("first_name", "last_name", "surname", "dob", "birth_date",
+               "date_of_birth", "phone", "email", "address", "telephone"):
+        if kw in col_low:
+            return True
+    return False
+
+
 def clean_dataframe(
-    dataframe, categorical_columns=None, preserve_missing_columns=None
+    dataframe, categorical_columns=None, preserve_missing_columns=None,
+    pid_column=None,
 ):
     categorical_columns = categorical_columns or set()
     preserve_missing_columns = preserve_missing_columns or set()
@@ -122,12 +302,28 @@ def clean_dataframe(
     duplicates_removed = 0
     dataframe = dataframe.reset_index(drop=True)
 
+    # --- Per-participant forward/back-fill for personal/demographic columns ---
+    if pid_column and pid_column in dataframe.columns:
+        for column in dataframe.columns:
+            if column == pid_column:
+                continue
+            if dataframe[column].isna().any() and is_personal_or_date_column(
+                column, dataframe[column], pid_columns=pid_columns
+            ):
+                dataframe[column] = dataframe.groupby(pid_column, sort=False)[
+                    column
+                ].transform(lambda s: s.ffill().bfill())
+
     missing_values_filled = 0
     for column in dataframe.columns:
         missing_count = int(dataframe[column].isna().sum())
         if not missing_count:
             continue
         if column in preserve_missing_columns:
+            continue
+        # Never fill personal names, dates of birth, or high-cardinality text
+        # with the global mode — that would overwrite every row with one value.
+        if is_personal_or_date_column(column, dataframe[column], pid_columns=pid_columns):
             continue
         missing_values_filled += missing_count
         if (
@@ -162,17 +358,38 @@ def clean_dataframe(
     return dataframe, duplicates_removed, missing_values_filled, records
 
 
+def detect_csv_delimiter(filename, line):
+    """Detect whether a CSV/TSV file uses comma or tab delimiters.
+
+    Avoids false-positive tab detection on CSV files whose question headers
+    contain internal tab characters (e.g. bilingual translations).
+    """
+    ext = os.path.splitext(filename or "")[1].lower()
+    if ext == ".tsv":
+        return "\t"
+    if ext == ".csv":
+        if "," in line:
+            return ","
+        if "\t" in line:
+            return "\t"
+        return ","
+    comma_count = line.count(",")
+    tab_count = line.count("\t")
+    return "\t" if tab_count > comma_count else ","
+
+
 def read_upload(upload):
-    extension = os.path.splitext(upload.filename)[1].lower()
+    filename = getattr(upload, "filename", "") or ""
+    extension = os.path.splitext(filename)[1].lower()
     if extension in (".csv", ".tsv"):
         pos = upload.tell() if hasattr(upload, "tell") else None
         line = upload.readline()
         if isinstance(line, bytes):
             line = line.decode("utf-8", errors="ignore")
-        sep = "\t" if "\t" in line else ","
+        sep = detect_csv_delimiter(filename, line)
         if pos is not None and hasattr(upload, "seek"):
             upload.seek(pos)
-        return pd.read_csv(upload, sep=sep)
+        return pd.read_csv(upload, sep=sep, low_memory=False)
     if extension in (".xlsx", ".xls"):
         return pd.read_excel(upload)
     raise ValueError("Upload a CSV or Excel file (.csv, .xlsx, .xls).")
@@ -186,20 +403,27 @@ def read_upload_headers(upload):
         line = upload.readline()
         if isinstance(line, bytes):
             line = line.decode("utf-8", errors="ignore")
-        sep = "\t" if "\t" in line else ","
+        sep = detect_csv_delimiter(filename, line)
         if pos is not None and hasattr(upload, "seek"):
             upload.seek(pos)
-        df = pd.read_csv(upload, sep=sep, nrows=1)
+        df = pd.read_csv(upload, sep=sep, nrows=2)
         if pos is not None and hasattr(upload, "seek"):
             upload.seek(pos)
-        return make_unique_headers(df.columns)
+        df, header_map = sanitize_headers_for_upload(df)
+        cols = list(df.columns)
+        # Build display_names: original label for each sanitized column
+        display_names = [header_map.get(c, c) for c in cols]
+        return cols, display_names
     if extension in (".xlsx", ".xls"):
         pos = upload.tell() if hasattr(upload, "tell") else None
-        df = pd.read_excel(upload, nrows=1)
+        df = pd.read_excel(upload, nrows=2)
         if pos is not None and hasattr(upload, "seek"):
             upload.seek(pos)
-        return make_unique_headers(df.columns)
-    return []
+        df, header_map = sanitize_headers_for_upload(df)
+        cols = list(df.columns)
+        display_names = [header_map.get(c, c) for c in cols]
+        return cols, display_names
+    return [], []
 
 
 def is_missing(value):
@@ -255,7 +479,6 @@ def is_excluded_visualization_column(column):
         "instanceid",
         "metadata",
         "meta",
-        "phonenumber",
         "simserial",
     }:
         return True
@@ -325,6 +548,40 @@ def group_question_columns(df):
         for col in cols:
             subcolumn_to_group[col] = group_name
 
+    # RedCap labeled exports: "Question text? (select all that apply) (choice=Option)"
+    choice_pattern = re.compile(
+        r"^(.*?)\s*\(select all that apply\).*?\(choice=(.+?)\)\s*$",
+        re.IGNORECASE,
+    )
+    slug_choice_pattern = re.compile(
+        r"^(.*?)(?:_+select_all_that_apply)?_+choice_(.+?)$",
+        re.IGNORECASE,
+    )
+    for column in eligible_columns:
+        if column in subcolumn_to_group:
+            continue
+        col_str = str(column)
+        m = choice_pattern.match(col_str) or slug_choice_pattern.match(col_str)
+        if not m:
+            continue
+        stem = m.group(1).strip("_ ")
+        if not stem:
+            continue
+        options_by_stem.setdefault(stem, []).append((column, stem, None, None))
+
+    # Merge new stems into multiple_response_questions.
+    # options_by_stem may have casefold keys from the first pass; compare
+    # case-insensitively to avoid creating duplicate entries under a different
+    # casing than what multiple_response_questions already holds.
+    mrq_lower = {k.casefold(): k for k in multiple_response_questions}
+    for stem, items in options_by_stem.items():
+        existing_key = mrq_lower.get(stem.casefold())
+        if len(items) > 1 and existing_key is None:
+            multiple_response_questions[stem] = [x[0] for x in items]
+            for col in multiple_response_questions[stem]:
+                subcolumn_to_group[col] = stem
+
+
     mr_names_lower = {k.casefold(): k for k in multiple_response_questions}
 
     groups = {}
@@ -346,17 +603,28 @@ def group_question_columns(df):
 def detect_pid_columns(columns):
     candidates = []
     for column in columns:
-        normalized = re.sub(r"[^a-z0-9]+", "", str(column).casefold())
-        if (
-            normalized == "pid"
-            or normalized.startswith("pid")
-            or normalized in {
-                "participantid",
-                "participantidentifier",
-                "respondentid",
-                "subjectid",
-            }
+        col_str = str(column).strip()
+        col_lower = col_str.casefold()
+        normalized = re.sub(r"[^a-z0-9]+", "", col_lower)
+        tokens = set(re.findall(r"[a-z0-9]+", col_lower))
+        if normalized in {
+            "pid",
+            "participantid",
+            "participantidentifier",
+            "respondentid",
+            "subjectid",
+            "patientid",
+        }:
+            candidates.append(column)
+        elif re.search(r"(^|[\s_\.-])pid($|[\s_\.-])", col_lower):
+            candidates.append(column)
+        elif (
+            ("patient" in tokens and "id" in tokens)
+            or ("subject" in tokens and "id" in tokens)
+            or ("participant" in tokens and "id" in tokens)
         ):
+            candidates.append(column)
+        elif normalized.startswith("pid"):
             candidates.append(column)
     return candidates
 
@@ -453,6 +721,8 @@ def get_dataset_id_columns(dataset):
         pid_column = candidates[0]
     if pid_column and pid_column in dataset.column_names:
         return [pid_column]
+    if not candidates and "pid" in dataset.column_names:
+        return ["pid"]
     return candidates[:1] if candidates else []
 
 
@@ -918,6 +1188,109 @@ def extract_row_pids(frame, id_columns=None):
     return pd.Series(pids, index=frame.index)
 
 
+
+
+def _build_text_chart(column, values, row_pids, description=""):
+    raw_values = values.astype(str)
+    # Detect dates in both YYYY-MM-DD and DD/MM/YYYY (and similar) formats
+    looks_like_date = (
+        raw_values.str.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}").mean() >= 0.5
+        or raw_values.str.match(r"^\d{1,2}[/-]\d{1,2}[/-]\d{4}").mean() >= 0.5
+    )
+    if looks_like_date:
+        try:
+            parsed_dates = pd.to_datetime(
+                raw_values, errors="coerce", dayfirst=True
+            )
+        except Exception:
+            parsed_dates = pd.to_datetime(raw_values, errors="coerce")
+    else:
+        parsed_dates = pd.Series(dtype="datetime64[ns]")
+    if looks_like_date and parsed_dates.notna().sum() >= len(raw_values) * 0.5:
+        date_values = parsed_dates.dropna()
+        col_low = column.lower().replace(" ", "_").replace("-", "_")
+        is_dob_col = any(
+            kw in col_low
+            for kw in (
+                "dob",
+                "birth_date",
+                "date_of_birth",
+                "dateofbirth",
+                "birth_year",
+                "year_of_birth",
+            )
+        )
+        if is_dob_col:
+            # Group by birth YEAR — these are historic dates spread over decades
+            year_series = date_values.dt.year.astype(str)
+            frequencies = year_series.value_counts().sort_index()
+            labels = frequencies.index.tolist()
+            pids_per_period = []
+            for yr in labels:
+                yr_indices = year_series[year_series == yr].index
+                pids_per_period.append(row_pids.loc[yr_indices].tolist())
+            summary_str = f"{len(date_values):,} birth records · {len(frequencies):,} birth years"
+        else:
+            periods = date_values.dt.to_period("M").astype(str)
+            frequencies = periods.value_counts().sort_index().tail(36)
+            labels = frequencies.index.tolist()
+            pids_per_period = []
+            for period in labels:
+                period_indices = periods[periods == period].index
+                pids_per_period.append(row_pids.loc[period_indices].tolist())
+            summary_str = (
+                f"{len(date_values):,} dated records · "
+                f"latest {len(frequencies):,} months"
+            )
+
+        return {
+            "name": column,
+            "description": description,
+            "kind": "date",
+            "variants": [
+                {
+                    "type": "line",
+                    "label": "Trend line",
+                    "labels": labels,
+                    "labels_en": labels,
+                    "labels_ny": labels,
+                    "values": [int(value) for value in frequencies.tolist()],
+                    "pids": pids_per_period,
+                }
+            ],
+            "summary": summary_str,
+        }
+
+    frequencies = raw_values.value_counts()
+    pids_per_cat = []
+    for cat in frequencies.index:
+        cat_indices = raw_values[raw_values == cat].index
+        pids_per_cat.append(row_pids.loc[cat_indices].tolist())
+
+    variants = [
+        categorical_chart_variant(
+            frequencies.index.tolist(),
+            frequencies.index.tolist(),
+            frequencies.index.tolist(),
+            frequencies.tolist(),
+            category_count=raw_values.nunique(),
+            pids=pids_per_cat,
+        )
+    ]
+    return {
+        "name": column,
+        "description": description,
+        "kind": "categories",
+        "coded": False,
+        "variants": variants,
+        "summary": (
+            f"{values.nunique():,} unique values · showing first 10 of {len(frequencies):,}"
+            if len(frequencies) > 10
+            else f"{values.nunique():,} unique values · {len(frequencies):,} categories"
+        ),
+    }
+
+
 def build_single_column_chart(
     column,
     frame,
@@ -927,6 +1300,15 @@ def build_single_column_chart(
     description="",
     row_pids=None,
 ):
+
+    if column.lower() in ("gender", "sex"):
+        print(
+            f"DEBUG column={column!r}, dtype={frame[column].dtype}, "
+            f"sample={frame[column].dropna().head(10).tolist()}, "
+            f"in_coded={column in coded_columns}, "
+            f"list={variable_lists.get(column)}"
+        )
+
     if row_pids is None:
         row_pids = extract_row_pids(frame)
     values = frame[column].dropna()
@@ -988,9 +1370,52 @@ def build_single_column_chart(
             ),
         }
     elif pd.api.types.is_numeric_dtype(values):
-        numeric = pd.to_numeric(values, errors="coerce").dropna()
+        numeric = pd.to_numeric(values, errors="coerce")
+        non_numeric_count = int(numeric.isna().sum()) - int(values.isna().sum())
+        numeric = numeric.dropna()
+        if non_numeric_count > max(1, int(0.05 * max(1, len(values)))):
+            return _build_text_chart(column, values, row_pids, description)
         if numeric.empty:
             return None
+        col_lower = column.lower().replace(" ", "_").replace("-", "_")
+        is_measurement_name = any(
+            m in col_lower for m in ("age", "weight", "height", "bp", "score", "temp")
+        )
+        # Discrete whole numbers (e.g. sex/gender 1/2, visit 1/2/3, outcome 0/1)
+        is_discrete = (
+            column not in coded_columns
+            and numeric.nunique() <= 15
+            and (numeric % 1 == 0).all()
+            and not (is_measurement_name and numeric.min() >= 15)
+        )
+        if is_discrete:
+            # Map whole numbers cleanly: 1.0 -> '1', 2.0 -> '2'
+            clean_str = numeric.map(lambda v: str(int(v)) if v == int(v) else str(v))
+            frequencies = clean_str.value_counts().sort_index()
+            pids_per_cat = []
+            for cat in frequencies.index:
+                cat_indices = clean_str[clean_str == cat].index
+                pids_per_cat.append(row_pids.loc[cat_indices].tolist())
+            variants = [
+                categorical_chart_variant(
+                    frequencies.index.tolist(),
+                    frequencies.index.tolist(),
+                    frequencies.index.tolist(),
+                    frequencies.tolist(),
+                    category_count=clean_str.nunique(),
+                    pids=pids_per_cat,
+                )
+            ]
+            return {
+                "name": column,
+                "description": description,
+                "kind": "categories",
+                "coded": False,
+                "variants": variants,
+                "summary": (
+                    f"{clean_str.nunique():,} unique values · {len(frequencies):,} categories"
+                ),
+            }
         bin_count = min(8, max(1, numeric.nunique()))
         counts, edges = pd.cut(numeric, bins=bin_count, retbins=True)
         histogram = counts.value_counts(sort=False)
@@ -1024,223 +1449,192 @@ def build_single_column_chart(
             ),
         }
     else:
-        raw_values = values.astype(str)
-        looks_like_date = (
-            raw_values.str.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}").mean() >= 0.8
-        )
-        parsed_dates = (
-            pd.to_datetime(raw_values, errors="coerce", format="mixed", utc=True)
-            if looks_like_date
-            else pd.Series(dtype="datetime64[ns, UTC]")
-        )
-        if looks_like_date and parsed_dates.notna().sum() >= len(raw_values) * 0.8:
-            date_values = parsed_dates.dropna()
-            periods = date_values.dt.tz_localize(None).dt.to_period("M").astype(str)
-            frequencies = periods.value_counts().sort_index().tail(18)
-            pids_per_period = []
-            for period in frequencies.index:
-                period_indices = periods[periods == period].index
-                pids_per_period.append(row_pids.loc[period_indices].tolist())
-
-            return {
-                "name": column,
-                "description": description,
-                "kind": "date",
-                "variants": [
-                    {
-                        "type": "line",
-                        "label": "Trend line",
-                        "labels": frequencies.index.tolist(),
-                        "labels_en": frequencies.index.tolist(),
-                        "labels_ny": frequencies.index.tolist(),
-                        "values": [int(value) for value in frequencies.tolist()],
-                        "pids": pids_per_period,
-                    }
-                ],
-                "summary": (
-                    f"{len(date_values):,} dated records · "
-                    f"latest {len(frequencies):,} months"
-                ),
-            }
-
-        frequencies = raw_values.value_counts()
-        pids_per_cat = []
-        for cat in frequencies.index:
-            cat_indices = raw_values[raw_values == cat].index
-            pids_per_cat.append(row_pids.loc[cat_indices].tolist())
-
-        variants = [
-            categorical_chart_variant(
-                frequencies.index.tolist(),
-                frequencies.index.tolist(),
-                frequencies.index.tolist(),
-                frequencies.tolist(),
-                category_count=raw_values.nunique(),
-                pids=pids_per_cat,
-            )
-        ]
-        return {
-            "name": column,
-            "description": description,
-            "kind": "categories",
-            "coded": False,
-            "variants": variants,
-            "summary": (
-                f"{values.nunique():,} unique values · showing first 10 of {len(frequencies):,}"
-                if len(frequencies) > 10
-                else f"{values.nunique():,} unique values · {len(frequencies):,} categories"
-            ),
-        }
+        return _build_text_chart(column, values, row_pids, description)
 
 
 def dashboard_data(dataset, codebook=None):
     codebook = codebook or {}
+    has_codebook = bool(
+        codebook
+        and (
+            codebook.get("variable_lists")
+            or codebook.get("lists")
+            or codebook.get("coded_columns")
+        )
+    )
     frame = pd.DataFrame(dataset.records, columns=dataset.column_names)
     variable_lists = codebook.get("variable_lists", {})
     response_lists = codebook.get("lists", {})
     candidates = codebook.get("candidates", {})
     coded_columns = set(codebook.get("coded_columns", []))
-    question_groups = group_question_columns(frame)
-    app.logger.info(
-        "Detected dashboard question groups for study %s: %s",
-        dataset.id,
-        question_groups,
-    )
     id_columns = get_dataset_id_columns(dataset)
     row_pids = extract_row_pids(frame, id_columns)
     charts = []
-    for question_name, question_columns in question_groups.items():
-        if len(question_columns) > 1:
-            selected = pd.DataFrame(
-                {
-                    column: frame[column].map(multiselect_selection)
-                    for column in question_columns
-                }
-            )
-            counts = selected.sum(axis=0).astype(int)
-            english_labels, chichewa_labels, list_name = multiselect_labels(
-                question_name, question_columns, codebook
-            )
-            total_selections = int(counts.sum())
-            participants_with_selections = int(selected.any(axis=1).sum())
-            # Compute PIDs per choice for grouped bar chart
-            pids_per_choice = [
-                row_pids.loc[selected[col][selected[col]].index].tolist()
-                for col in question_columns
-            ]
-            charts.append(
-                {
-                    "name": question_name,
-                    "description": "",
-                    "kind": "categories",
-                    "coded": bool(list_name),
-                    "response_list": list_name,
-                    "is_grouped": True,
-                    "is_subcolumn": False,
-                    "is_base_column": False,
-                    "group_columns": question_columns,
-                    "variants": [
-                        {
-                            "type": "bar",
-                            "label": "Bar chart",
-                            "labels": english_labels,
-                            "labels_en": english_labels,
-                            "labels_ny": chichewa_labels,
-                            "values": [int(value) for value in counts.tolist()],
-                            "pids": pids_per_choice,
-                        }
-                    ],
-                    "summary": (
-                        f"{participants_with_selections:,} participants selected "
-                        f"{total_selections:,} options across "
-                        f"{len(question_columns):,} choices"
-                    ),
-                }
-            )
 
-            # Sub-column charts for individual drilldown
-            for sub_col, en_label, ny_label in zip(
-                question_columns, english_labels, chichewa_labels
-            ):
-                if sub_col not in frame.columns:
-                    continue
-                sub_series = frame[sub_col].map(multiselect_selection)
-                selected_cnt = int(sub_series.sum())
-                unselected_cnt = int((~sub_series).sum())
-                pct = (
-                    (selected_cnt / len(sub_series) * 100)
-                    if len(sub_series) > 0
-                    else 0
+    if not has_codebook:
+        # WITHOUT CODEBOOK: Display all dataset columns directly in charts
+        # using their exact dataset values. Exclude only PID identifiers.
+        pid_cols = set(detect_pid_columns(frame.columns))
+        for column in dataset.column_names:
+            if column in pid_cols or column not in frame.columns:
+                continue
+            if frame[column].dropna().empty:
+                continue
+            chart = build_single_column_chart(
+                column,
+                frame,
+                variable_lists={},
+                response_lists={},
+                coded_columns=set(),
+                row_pids=row_pids,
+            )
+            if chart:
+                chart["is_grouped"] = False
+                chart["is_subcolumn"] = False
+                chart["is_base_column"] = False
+                display_name = (getattr(dataset, "original_headers", None) or {}).get(column, column)
+                chart["key"] = column
+                chart["name"] = display_name
+                charts.append(chart)
+    else:
+        question_groups = group_question_columns(frame)
+        app.logger.info(
+            "Detected dashboard question groups for study %s: %s",
+            dataset.id,
+            question_groups,
+        )
+        for question_name, question_columns in question_groups.items():
+            if len(question_columns) > 1:
+                selected = pd.DataFrame(
+                    {
+                        column: frame[column].map(multiselect_selection)
+                        for column in question_columns
+                    }
                 )
-                selected_pids = row_pids.loc[sub_series[sub_series].index].tolist()
-                unselected_pids = row_pids.loc[sub_series[~sub_series].index].tolist()
+                counts = selected.sum(axis=0).astype(int)
+                english_labels, chichewa_labels, list_name = multiselect_labels(
+                    question_name, question_columns, codebook
+                )
+                total_selections = int(counts.sum())
+                participants_with_selections = int(selected.any(axis=1).sum())
+                # Compute PIDs per choice for grouped bar chart
+                pids_per_choice = [
+                    row_pids.loc[selected[col][selected[col]].index].tolist()
+                    for col in question_columns
+                ]
                 charts.append(
                     {
-                        "name": sub_col,
-                        "description": f"Choice: {en_label}",
+                        "name": question_name,
+                        "description": "",
                         "kind": "categories",
                         "coded": bool(list_name),
                         "response_list": list_name,
-                        "is_grouped": False,
-                        "is_subcolumn": True,
+                        "is_grouped": True,
+                        "is_subcolumn": False,
                         "is_base_column": False,
-                        "parent_group": question_name,
+                        "group_columns": question_columns,
                         "variants": [
                             {
-                                "type": "donut",
-                                "label": "Donut chart",
-                                "labels": [
-                                    f"Selected ({selected_cnt:,})",
-                                    f"Not selected ({unselected_cnt:,})",
-                                ],
-                                "labels_en": [
-                                    f"Selected ({selected_cnt:,})",
-                                    f"Not selected ({unselected_cnt:,})",
-                                ],
-                                "labels_ny": [
-                                    f"Zosankhidwa ({selected_cnt:,})",
-                                    f"Zosasankhidwa ({unselected_cnt:,})",
-                                ],
-                                "values": [selected_cnt, unselected_cnt],
-                                "pids": [selected_pids, unselected_pids],
+                                "type": "bar",
+                                "label": "Bar chart",
+                                "labels": english_labels,
+                                "labels_en": english_labels,
+                                "labels_ny": chichewa_labels,
+                                "values": [int(value) for value in counts.tolist()],
+                                "pids": pids_per_choice,
                             }
                         ],
                         "summary": (
-                            f"{selected_cnt:,} of {len(sub_series):,} participants "
-                            f"selected ({pct:.1f}%) · {en_label}"
+                            f"{participants_with_selections:,} participants selected "
+                            f"{total_selections:,} options across "
+                            f"{len(question_columns):,} choices"
                         ),
                     }
                 )
 
-            # Base column individual chart if present
-            if question_name in frame.columns:
-                base_chart = build_single_column_chart(
-                    question_name,
-                    frame,
-                    variable_lists,
-                    response_lists,
-                    coded_columns,
-                    description="Raw question column",
-                    row_pids=row_pids,
-                )
-                if base_chart:
-                    base_chart["is_grouped"] = False
-                    base_chart["is_subcolumn"] = False
-                    base_chart["is_base_column"] = True
-                    base_chart["parent_group"] = question_name
-                    charts.append(base_chart)
-            continue
+                # Sub-column charts for individual drilldown
+                for sub_col, en_label, ny_label in zip(
+                    question_columns, english_labels, chichewa_labels
+                ):
+                    if sub_col not in frame.columns:
+                        continue
+                    sub_series = frame[sub_col].map(multiselect_selection)
+                    selected_cnt = int(sub_series.sum())
+                    unselected_cnt = int((~sub_series).sum())
+                    pct = (
+                        (selected_cnt / len(sub_series) * 100)
+                        if len(sub_series) > 0
+                        else 0
+                    )
+                    selected_pids = row_pids.loc[sub_series[sub_series].index].tolist()
+                    unselected_pids = row_pids.loc[sub_series[~sub_series].index].tolist()
+                    charts.append(
+                        {
+                            "name": sub_col,
+                            "description": f"Choice: {en_label}",
+                            "kind": "categories",
+                            "coded": bool(list_name),
+                            "response_list": list_name,
+                            "is_grouped": False,
+                            "is_subcolumn": True,
+                            "is_base_column": False,
+                            "parent_group": question_name,
+                            "variants": [
+                                {
+                                    "type": "donut",
+                                    "label": "Donut chart",
+                                    "labels": [
+                                        f"Selected ({selected_cnt:,})",
+                                        f"Not selected ({unselected_cnt:,})",
+                                    ],
+                                    "labels_en": [
+                                        f"Selected ({selected_cnt:,})",
+                                        f"Not selected ({unselected_cnt:,})",
+                                    ],
+                                    "labels_ny": [
+                                        f"Zosankhidwa ({selected_cnt:,})",
+                                        f"Zosasankhidwa ({unselected_cnt:,})",
+                                    ],
+                                    "values": [selected_cnt, unselected_cnt],
+                                    "pids": [selected_pids, unselected_pids],
+                                }
+                            ],
+                            "summary": (
+                                f"{selected_cnt:,} of {len(sub_series):,} participants "
+                                f"selected ({pct:.1f}%) · {en_label}"
+                            ),
+                        }
+                    )
 
-        column = question_columns[0]
-        chart = build_single_column_chart(
-            column, frame, variable_lists, response_lists, coded_columns,
-            row_pids=row_pids,
-        )
-        if chart:
-            chart["is_grouped"] = False
-            chart["is_subcolumn"] = False
-            chart["is_base_column"] = False
-            charts.append(chart)
+                # Base column individual chart if present
+                if question_name in frame.columns:
+                    base_chart = build_single_column_chart(
+                        question_name,
+                        frame,
+                        variable_lists,
+                        response_lists,
+                        coded_columns,
+                        description="Raw question column",
+                        row_pids=row_pids,
+                    )
+                    if base_chart:
+                        base_chart["is_grouped"] = False
+                        base_chart["is_subcolumn"] = False
+                        base_chart["is_base_column"] = True
+                        base_chart["parent_group"] = question_name
+                        charts.append(base_chart)
+                continue
+
+            column = question_columns[0]
+            chart = build_single_column_chart(
+                column, frame, variable_lists, response_lists, coded_columns,
+                row_pids=row_pids,
+            )
+            if chart:
+                chart["is_grouped"] = False
+                chart["is_subcolumn"] = False
+                chart["is_base_column"] = False
+                charts.append(chart)
 
     preview = [
         {key: (None if pd.isna(value) else value) for key, value in row.items()}
@@ -1639,6 +2033,10 @@ def upload():
 
     try:
         raw = read_upload(file)
+        raw, header_map = sanitize_headers_for_upload(raw)
+        if header_map:
+            print(f"[upload] sanitized {len(header_map)} headers for labeled export")
+
         raw_expected = request.form.get("expected_participants", "").strip()
         expected_participants = None
         if raw_expected:
@@ -1674,11 +2072,26 @@ def upload():
             raw.columns = make_unique_headers(raw.columns)
             variables = parse_codebook(codebook_file, raw)
             categorical_columns = set(variables["coded_columns"])
+
+        # Detect the primary PID column so per-participant ffill can be applied
+        _pid_cols = detect_pid_columns(raw.columns)
+        _primary_pid = None
+        if clean_mode == "first_three" and len(raw.columns) >= 3:
+            _primary_pid = raw.columns[0]
+        elif clean_mode == "custom":
+            custom_selected = request.form.getlist("custom_columns")
+            if custom_selected:
+                _primary_pid = custom_selected[0]
+        if not _primary_pid:
+            _primary_pid = _pid_cols[0] if _pid_cols else (raw.columns[0] if len(raw.columns) > 0 else None)
+
         cleaned, duplicates, missing, records = clean_dataframe(
             raw,
             categorical_columns,
             preserve_missing_columns=preserve_missing_columns,
+            pid_column=_primary_pid,
         )
+
         if codebook_file is not None and codebook_file.filename:
             variables["coded_columns"] = [
                 name for name in variables["coded_columns"] if name in cleaned.columns
@@ -1721,6 +2134,11 @@ def upload():
         flash("The uploaded file has no usable rows or columns.", "error")
         return redirect(url_for("index"))
 
+
+    if cleaned.empty or len(cleaned.columns) == 0:
+        flash("The uploaded file has no usable rows or columns.", "error")
+        return redirect(url_for("index"))
+
     clean_columns = None
     if clean_mode == "first_three":
         clean_columns = list(cleaned.columns[:3]) if len(cleaned.columns) >= 3 else list(cleaned.columns)
@@ -1733,7 +2151,12 @@ def upload():
             clean_columns = list(cleaned.columns[:3]) if len(cleaned.columns) >= 3 else list(cleaned.columns)
     else:  # "pid"
         detected_pid = detect_pid_columns(cleaned.columns)
-        clean_columns = [detected_pid[0]] if detected_pid else None
+        if detected_pid:
+            clean_columns = [detected_pid[0]]
+        elif "pid" in cleaned.columns:
+            clean_columns = ["pid"]
+        else:
+            clean_columns = None
 
     dataset = StudyDataset(
         study_name=study_name,
@@ -1747,6 +2170,7 @@ def upload():
         expected_participants=expected_participants,
         clean_columns=clean_columns,
         clean_mode=clean_mode,
+        original_headers=header_map,
     )
     db.session.add(dataset)
     try:
@@ -1827,6 +2251,14 @@ def dashboard(dataset_id):
     codebook = db.session.get(StudyCodebook, dataset.id)
     codebook_data = codebook.variables if codebook else None
     charts, preview, all_dataset_pids = dashboard_data(dataset, codebook_data)
+    if not charts:
+        app.logger.warning(
+            "Dataset %s produced no charts. columns=%s dtypes=%s",
+            dataset.id,
+            dataset.column_names[:10],
+            {c: type(dataset.records[0].get(c)).__name__ for c in dataset.column_names[:10]}
+            if dataset.records else {},
+        )
     chart_sections = group_related_charts(charts)
     id_columns = get_dataset_id_columns(dataset)
     pid_candidates = detect_pid_columns(dataset.column_names)
@@ -2375,8 +2807,8 @@ def inspect_headers():
     if file is None or not file.filename:
         return {"columns": []}, 400
     try:
-        headers = read_upload_headers(file)
-        return {"columns": headers}
+        columns, display_names = read_upload_headers(file)
+        return {"columns": columns, "display_names": display_names}
     except Exception as error:
         app.logger.warning("inspect_headers error: %s", error)
         return {"columns": [], "error": str(error)}, 200
@@ -2395,6 +2827,8 @@ with app.app_context():
                 conn.execute(text("ALTER TABLE study_dataset ADD COLUMN clean_columns JSON"))
             if "clean_mode" not in existing_cols:
                 conn.execute(text("ALTER TABLE study_dataset ADD COLUMN clean_mode VARCHAR(50)"))
+            if "original_headers" not in existing_cols:
+                conn.execute(text("ALTER TABLE study_dataset ADD COLUMN original_headers JSON"))
             conn.commit()
     except Exception as e:
         app.logger.warning("Auto-migration note: %s", e)

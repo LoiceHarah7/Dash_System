@@ -85,15 +85,19 @@ function applyCustomColsFilter() {
   }
 }
 
-function renderColumnChoices(columns) {
+function renderColumnChoices(columns, displayNames) {
   if (!columns || !columns.length) return;
   allLoadedColumns = columns;
+  // displayNames: human-readable labels for the UI; fall back to columns
+  const labels = displayNames && displayNames.length === columns.length
+    ? displayNames
+    : columns;
 
   // 1. Update First 3 Columns Row Style
-  const first3 = columns.slice(0, 3);
-  if (firstCol1) firstCol1.textContent = first3[0] || "Column 1";
-  if (firstCol2) firstCol2.textContent = first3[1] || "Column 2";
-  if (firstCol3) firstCol3.textContent = first3[2] || "Column 3";
+  const first3Labels = labels.slice(0, 3);
+  if (firstCol1) firstCol1.textContent = first3Labels[0] || "Column 1";
+  if (firstCol2) firstCol2.textContent = first3Labels[1] || "Column 2";
+  if (firstCol3) firstCol3.textContent = first3Labels[2] || "Column 3";
 
   if (firstThreeRow) {
     firstThreeRow.classList.add("active-row");
@@ -111,7 +115,7 @@ function renderColumnChoices(columns) {
     columns.forEach((col, idx) => {
       const chip = document.createElement("label");
       chip.className = "custom-col-chip";
-      chip.dataset.colName = col;
+      chip.dataset.colName = labels[idx] || col;
       chip.dataset.colIndex = idx;
       if (idx >= 10) {
         chip.classList.add("custom-col-extra");
@@ -133,7 +137,7 @@ function renderColumnChoices(columns) {
 
       const nameSpan = document.createElement("span");
       nameSpan.className = "chip-name";
-      nameSpan.textContent = col;
+      nameSpan.textContent = labels[idx] || col;
 
       chip.appendChild(chk);
       chip.appendChild(checkIcon);
@@ -236,8 +240,31 @@ if (fileInput) {
       reader.onload = (e) => {
         try {
           const text = e.target.result;
-          const firstLine = text.split(/\r\n|\n|\r/)[0];
-          const sep = lowerName.endsWith(".tsv") || firstLine.includes("\t") ? "\t" : ",";
+          // Find the first newline that is NOT inside a quoted field.
+          // CSV headers with embedded newlines (e.g. bilingual RedCap
+          // exports) would otherwise break the naive split.
+          let inQuotes = false;
+          let nlPos = -1;
+          for (let i = 0; i < text.length; i++) {
+            const ch = text[i];
+            if (ch === '"') {
+              inQuotes = !inQuotes;
+            } else if (!inQuotes && (ch === '\n' || ch === '\r')) {
+              nlPos = i;
+              break;
+            }
+          }
+          const firstLine = nlPos >= 0 ? text.substring(0, nlPos) : text;
+          let sep = ",";
+          if (lowerName.endsWith(".tsv")) {
+            sep = "\t";
+          } else if (lowerName.endsWith(".csv")) {
+            sep = firstLine.includes(",") ? "," : (firstLine.includes("\t") ? "\t" : ",");
+          } else {
+            const commaCount = (firstLine.match(/,/g) || []).length;
+            const tabCount = (firstLine.match(/\t/g) || []).length;
+            sep = tabCount > commaCount ? "\t" : ",";
+          }
           const headers = parseSimpleCsvHeaders(firstLine, sep);
           if (headers.length) {
             renderColumnChoices(headers);
@@ -246,7 +273,8 @@ if (fileInput) {
           console.warn("Client CSV read error:", err);
         }
       };
-      reader.readAsText(file.slice(0, 8192));
+      // Read up to 128 KB to cover CSVs with many columns / long labels
+      reader.readAsText(file.slice(0, 131072));
     }
 
     // API inspection for guaranteed fidelity (Excel and CSV)
@@ -256,7 +284,7 @@ if (fileInput) {
       .then((r) => r.json())
       .then((data) => {
         if (data && data.columns && data.columns.length) {
-          renderColumnChoices(data.columns);
+          renderColumnChoices(data.columns, data.display_names);
         }
       })
       .catch((err) => {

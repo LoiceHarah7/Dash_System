@@ -40,11 +40,11 @@
           </div>
         </div>
         {% if codebook %}
-          {% set current_list = codebook.variables.variable_lists.get(chart.name, chart.response_list or "") %}
+          {% set current_list = codebook.variables.variable_lists.get(chart.key or chart.name, chart.response_list or "") %}
           <details class="chart-mapping">
             <summary class="chart-menu" aria-label="Map {{ chart.name }} to a codebook response list" title="Map to codebook">◫</summary>
             <form class="chart-mapping-form" method="post" action="{{ url_for('save_codebook_mapping', dataset_id=dataset.id) }}">
-              <input type="hidden" name="column" value="{{ chart.name }}">
+              <input type="hidden" name="column" value="{{ chart.key or chart.name }}">
               <label for="chart-list-{{ chart_index }}">Response list</label>
               <select id="chart-list-{{ chart_index }}" name="list_name">
                 <option value="">No codebook mapping</option>
@@ -708,7 +708,17 @@
       </div>
       <script src="{{ url_for('static', filename='charts.js') }}" defer></script>
     {% else %}
-      <div class="empty-state"><span>◫</span><strong>No chartable columns found</strong><p>This dataset was cleaned, but it doesn’t contain values that can be visualized.</p></div>
+      <div class="empty-state">
+        <span>◫</span>
+        <strong>No chartable columns found</strong>
+        <p>This usually means one of:</p>
+        <ul style="text-align: left; max-width: 600px; margin: 12px auto; line-height: 1.6; padding-left: 24px;">
+          <li>The file has only one column or all columns are empty.</li>
+          <li>Every column was recognized as an ID / metadata column and excluded.</li>
+          <li>The upload file is in a layout we don't yet parse (e.g., a multi-sheet Excel or RedCap two-row header we couldn't detect).</li>
+        </ul>
+        <p>Try re-exporting from RedCap as a single-sheet CSV with the "label" and "raw" choices appropriate to your study, then re-upload.</p>
+      </div>
     {% endif %}
   </section>
 

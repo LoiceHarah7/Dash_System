@@ -1380,6 +1380,56 @@ class StudyDashTests(unittest.TestCase):
             json_data["columns"],
             ["PID", "Visit_Number", "Instance_ID", "Survey_Score", "Gender"],
         )
+        self.assertIn("display_names", json_data)
+        self.assertEqual(
+            json_data["display_names"],
+            ["PID", "Visit_Number", "Instance_ID", "Survey_Score", "Gender"],
+        )
+
+    def test_inspect_headers_labeled_export_returns_display_names(self):
+        csv_bytes = (
+            b'"Breast Cancer Cohort (BCC) Patient ID","Repeat Instrument",'
+            b'"Gender","First Name"\n'
+            b'BCC-001,,Female,Mary\n'
+        )
+        response = self.client.post(
+            "/api/inspect-headers",
+            data={"file": (io.BytesIO(csv_bytes), "bcc.csv")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 200)
+        json_data = response.get_json()
+        # Sanitized machine names for form submission
+        self.assertEqual(json_data["columns"][0], "pid")
+        self.assertIn("repeat_instrument", json_data["columns"])
+        # Original display labels for UI — the first column was renamed to
+        # pid internally, but display_names preserves the original label
+        self.assertEqual(
+            json_data["display_names"][0],
+            "Breast Cancer Cohort (BCC) Patient ID",
+        )
+        self.assertIn("Repeat Instrument", json_data["display_names"])
+
+    def test_csv_with_internal_tab_in_header_preserves_comma_delimiter(self):
+        csv_bytes = (
+            b'"Breast Cancer Cohort (BCC) Patient ID","Repeat Instrument","Repeat Instance",'
+            b'"Q1. Lack of energy.\tNdilibe mphamvu.","Q2. Nausea.\tNdili ndi mseru."\n'
+            b'BCC-001,Visit1,1,1,2\n'
+        )
+        response = self.client.post(
+            "/api/inspect-headers",
+            data={"file": (io.BytesIO(csv_bytes), "bcc_tabs.csv")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(response.status_code, 200)
+        json_data = response.get_json()
+        self.assertEqual(len(json_data["columns"]), 5)
+        self.assertEqual(json_data["columns"][0], "pid")
+        self.assertEqual(json_data["columns"][1], "repeat_instrument")
+        self.assertEqual(json_data["columns"][2], "repeat_instance")
+        self.assertEqual(json_data["display_names"][0], "Breast Cancer Cohort (BCC) Patient ID")
+        self.assertEqual(json_data["display_names"][1], "Repeat Instrument")
+        self.assertEqual(json_data["display_names"][2], "Repeat Instance")
 
     def test_first_three_columns_clean_mode_and_expected_participants(self):
         # Study where one PID has multiple visits/instances.
@@ -1505,6 +1555,164 @@ class StudyDashTests(unittest.TestCase):
                 )
         # Dashboard must not say "No chartable columns found"
         self.assertNotIn(b"No chartable columns found", response.data)
+
+
+class PersonalColumnImputation(unittest.TestCase):
+    """Tests that personal names and DOB are never overwritten with global mode."""
+
+    def _import_helpers(self):
+        from app import clean_dataframe, is_personal_or_date_column, build_single_column_chart
+        return clean_dataframe, is_personal_or_date_column, build_single_column_chart
+
+    def _chart(self, col_name, values):
+        """Helper: build a chart for a single column with no codebook."""
+        from app import build_single_column_chart
+        df = pd.DataFrame({col_name: values, "pid": [f"P{i}" for i in range(len(values))]})
+        pids = df["pid"]
+        return build_single_column_chart(col_name, df, {}, {}, set(), row_pids=pids)
+
+    def test_is_personal_or_date_column_detects_known_names(self):
+        _, is_personal_or_date_column, _ = self._import_helpers()
+        self.assertTrue(is_personal_or_date_column("first_name"))
+        self.assertTrue(is_personal_or_date_column("surname"))
+        self.assertTrue(is_personal_or_date_column("dob"))
+        self.assertTrue(is_personal_or_date_column("date_of_birth"))
+        self.assertTrue(is_personal_or_date_column("phone_number"))
+        self.assertTrue(is_personal_or_date_column("email"))
+
+    def test_is_personal_or_date_column_safe_for_categorical(self):
+        _, is_personal_or_date_column, _ = self._import_helpers()
+        # Low-cardinality coded column – should NOT be treated as personal
+        s = pd.Series(["Male", "Female", "Male", "Female"] * 10)
+        self.assertFalse(is_personal_or_date_column("sex", s))
+
+    def test_personal_names_and_dob_not_overwritten_with_global_mode(self):
+        """In a longitudinal dataset each participant's name/DOB must stay
+        their own across all visits, never the global mode of another person."""
+        clean_dataframe, _, _ = self._import_helpers()
+
+        # 2 participants × 2 visits; names/DOBs only filled on visit 1
+        data = pd.DataFrame({
+            "pid":        ["P1", "P1", "P2", "P2"],
+            "visit":      [1,    2,    1,    2],
+            "first_name": ["Grace",    None,       "Blessings", None],
+            "dob":        ["1995-04-12", None,     "2001-08-20", None],
+            "score":      [10,    20,    30,    40],
+        })
+
+        df, _, _, _ = clean_dataframe(data, pid_column="pid")
+
+        # Participant 1 follow-up should have their OWN name, not "Blessings"
+        self.assertEqual(df.loc[1, "first_name"], "Grace")
+        self.assertEqual(df.loc[1, "dob"], "1995-04-12")
+
+        # Participant 2 follow-up should have their OWN name, not "Grace"
+        self.assertEqual(df.loc[3, "first_name"], "Blessings")
+        self.assertEqual(df.loc[3, "dob"], "2001-08-20")
+
+    def test_names_not_filled_when_no_pid_column(self):
+        """Without a pid_column, missing names stay None — not filled with mode."""
+        clean_dataframe, _, _ = self._import_helpers()
+
+        data = pd.DataFrame({
+            "pid":        ["P1", "P2"],
+            "first_name": ["Aaron", None],
+            "score":      [10, 20],
+        })
+        df, _, _, _ = clean_dataframe(data)
+        # name column should remain None/NaN — not "Aaron"
+        self.assertTrue(pd.isna(df.loc[1, "first_name"]) or df.loc[1, "first_name"] is None)
+
+    def test_dob_chart_groups_by_birth_year(self):
+        """DOB chart should produce year-level labels, not monthly slices."""
+        dobs = (
+            ["1990-01-15", "1991-03-22", "1992-07-04"] * 5
+            + ["12/05/1988", "23/09/1995"] * 3
+        )
+        result = self._chart("dob", dobs)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["kind"], "date")
+        labels = result["variants"][0]["labels"]
+        # All labels should be 4-digit year strings
+        for lbl in labels:
+            self.assertRegex(str(lbl), r"^\d{4}$", f"Expected year label, got: {lbl}")
+
+    def test_dd_mm_yyyy_dates_parsed_correctly(self):
+        """European-style DD/MM/YYYY dates must be parsed (not silently dropped)."""
+        dates = ["15/01/2020", "22/03/2021", "04/07/2022"] * 10
+        result = self._chart("collection_date", dates)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["kind"], "date")
+
+    def test_charts_display_exact_dataset_values_without_codebook(self):
+        """When no codebook is entered, charts must display exact dataset values
+        (e.g. 'Female' and 'Male' for Gender, not numbers) and all dataset columns."""
+        from app import dashboard_data
+
+        data = pd.DataFrame({
+            "bcc_pid": ["P1", "P1", "P2", "P3"],
+            "Gender": ["Female", "Female", "Male", "Female"],
+            "clinic": ["Central", "Central", "North", "South"],
+            "visit": [1, 2, 1, 1],
+        })
+        dataset = SimpleNamespace(
+            id=500,
+            study_name="No Codebook Gender Test",
+            filename="bcc.csv",
+            column_names=list(data.columns),
+            records=data.to_dict(orient="records"),
+            clean_columns=None,
+        )
+
+        charts, _, _ = dashboard_data(dataset, codebook=None)
+        charts_by_name = {c["name"]: c for c in charts}
+
+        # All columns except bcc_pid should be charted
+        self.assertNotIn("bcc_pid", charts_by_name)
+        self.assertIn("Gender", charts_by_name)
+        self.assertIn("clinic", charts_by_name)
+        self.assertIn("visit", charts_by_name)
+
+        # Gender must have exact values 'Female' and 'Male' (NOT numbers!)
+        gender_labels = charts_by_name["Gender"]["variants"][0]["labels"]
+        self.assertIn("Female", gender_labels)
+        self.assertIn("Male", gender_labels)
+        self.assertNotIn("1", gender_labels)
+        self.assertNotIn("2", gender_labels)
+
+        # Clinic must have exact values
+        clinic_labels = charts_by_name["clinic"]["variants"][0]["labels"]
+        self.assertIn("Central", clinic_labels)
+        self.assertIn("North", clinic_labels)
+
+        # Visit must have exact discrete values '1' and '2' (not a histogram!)
+        visit_labels = charts_by_name["visit"]["variants"][0]["labels"]
+        self.assertIn("1", visit_labels)
+        self.assertIn("2", visit_labels)
+
+    def test_bcc_pid_detected_and_demographics_ffill(self):
+        """bcc_pid must be detected as a PID column, and demographics must ffill
+        per-participant without filling with global mode."""
+        from app import detect_pid_columns, clean_dataframe
+
+        cols = ["bcc_pid", "visit", "first_name", "last_name", "Gender"]
+        detected = detect_pid_columns(cols)
+        self.assertIn("bcc_pid", detected)
+
+        df = pd.DataFrame({
+            "bcc_pid": ["BCC-01", "BCC-01", "BCC-02", "BCC-02"],
+            "visit": [1, 2, 1, 2],
+            "first_name": ["Grace", None, "Mary", None],
+            "last_name": ["Chikuse", None, "Banda", None],
+            "Gender": ["Female", "Female", "Female", "Female"],
+        })
+        cleaned, _, _, _ = clean_dataframe(df, pid_column=detected[0])
+        # BCC-01 follow up has Grace Chikuse
+        self.assertEqual(cleaned.loc[1, "first_name"], "Grace")
+        self.assertEqual(cleaned.loc[1, "last_name"], "Chikuse")
+        # BCC-02 follow up has Mary Banda
+        self.assertEqual(cleaned.loc[3, "first_name"], "Mary")
+        self.assertEqual(cleaned.loc[3, "last_name"], "Banda")
 
 
 if __name__ == "__main__":
