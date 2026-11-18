@@ -255,6 +255,30 @@ def sanitize_headers_for_upload(df):
     return df, header_map
 
 
+def is_fixed_demographic_column(column):
+    """Return True ONLY for fixed personal identity fields that should be
+    forward/back-filled across all repeat visits for the same participant.
+
+    This is intentionally narrow — only names and date-of-birth.
+    Event dates (consent, operation, appointment, collection) and single-instance
+    survey responses must NOT be ffilled, so they are excluded here.
+    """
+    col_low = re.sub(r"[^a-z0-9]+", "_", str(column).strip().lower()).strip("_")
+    fixed_exact = {
+        "first_name", "firstname", "given_name", "givenname",
+        "last_name", "lastname", "surname", "family_name", "familyname",
+        "middle_name", "middlename", "full_name", "fullname",
+        "dob", "date_of_birth", "dateofbirth", "birth_date", "birthdate",
+        "birth_year", "year_of_birth",
+    }
+    if col_low in fixed_exact:
+        return True
+    fixed_substrings = (
+        "first_name", "last_name", "surname", "dob", "birth_date", "date_of_birth",
+    )
+    return any(kw in col_low for kw in fixed_substrings)
+
+
 def is_personal_or_date_column(column, series=None, pid_columns=None):
     """Return True for columns that hold personal names, dates, DOB, or
     contact details so they are NEVER filled with the global mode value.
@@ -281,6 +305,39 @@ def is_personal_or_date_column(column, series=None, pid_columns=None):
                "date_of_birth", "phone", "email", "address", "telephone"):
         if kw in col_low:
             return True
+
+    # Date keyword check: match date, time, consent, enrolled, appointment, etc.
+    date_hint_keywords = (
+        "date", "consent", "enrolled", "enrollment", "signed",
+        "appointment", "start_date", "stop_date", "end_date",
+        "biopsy_date", "death_date", "censor_date",
+    )
+    tokens = set(re.findall(r"[a-z0-9]+", col_low))
+    if any(kw in col_low for kw in date_hint_keywords) or "date" in tokens or "dates" in tokens:
+        return True
+
+    # Value-based date detection: if 50%+ of non-null values look like dates
+    if series is not None:
+        try:
+            nonnull = series.dropna()
+            if len(nonnull) >= 2:
+                sample = nonnull.astype(str).str.strip()
+                date_like = (
+                    sample.str.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}").mean()
+                    + sample.str.match(r"^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}").mean()
+                )
+                if date_like >= 0.5:
+                    return True
+                # Excel serial dates: bare integers > 30000 (post-1982)
+                try:
+                    as_num = pd.to_numeric(sample, errors="coerce")
+                    if as_num.notna().mean() >= 0.8 and (as_num > 30000).mean() >= 0.8:
+                        return True
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     return False
 
 
@@ -302,14 +359,15 @@ def clean_dataframe(
     duplicates_removed = 0
     dataframe = dataframe.reset_index(drop=True)
 
-    # --- Per-participant forward/back-fill for personal/demographic columns ---
+    # --- Per-participant forward/back-fill for FIXED IDENTITY columns only ---
+    # Only names and date-of-birth are ffilled across repeat visits.
+    # Event dates, consent dates, and single-instance survey responses are
+    # intentionally left as NaN so their chart counts reflect actual records.
     if pid_column and pid_column in dataframe.columns:
         for column in dataframe.columns:
             if column == pid_column:
                 continue
-            if dataframe[column].isna().any() and is_personal_or_date_column(
-                column, dataframe[column], pid_columns=pid_columns
-            ):
+            if dataframe[column].isna().any() and is_fixed_demographic_column(column):
                 dataframe[column] = dataframe.groupby(pid_column, sort=False)[
                     column
                 ].transform(lambda s: s.ffill().bfill())
@@ -321,10 +379,26 @@ def clean_dataframe(
             continue
         if column in preserve_missing_columns:
             continue
-        # Never fill personal names, dates of birth, or high-cardinality text
-        # with the global mode — that would overwrite every row with one value.
+        # Never fill personal/date columns with the global mode.
         if is_personal_or_date_column(column, dataframe[column], pid_columns=pid_columns):
             continue
+        # Never mode/median-fill a sparse column where each PID has at most 1
+        # non-null value (e.g. a one-time consent date in a repeat-visit dataset).
+        # Filling would artificially clone that single instance into every row.
+        # Only apply this guard when we have a genuine PID column (not a fallback
+        # first-column) AND the dataset has multiple rows per participant.
+        if (
+            pid_column
+            and pid_column in dataframe.columns
+            and pid_column in pid_columns  # must be a true PID, not a fallback
+        ):
+            pid_counts = dataframe.groupby(pid_column, sort=False)[column].count()
+            max_per_pid = int(pid_counts.max())
+            # Also check the dataset has repeat rows (some PIDs appear > 1 time)
+            pid_row_counts = dataframe[pid_column].value_counts()
+            has_repeats = bool((pid_row_counts > 1).any())
+            if max_per_pid <= 1 and has_repeats:
+                continue
         missing_values_filled += missing_count
         if (
             pd.api.types.is_numeric_dtype(dataframe[column])
@@ -1191,19 +1265,34 @@ def extract_row_pids(frame, id_columns=None):
 
 
 def _build_text_chart(column, values, row_pids, description=""):
+    # --- Strip blank / sentinel values before any chart processing ---
+    # This ensures chart counts reflect only records with real data,
+    # not NaN→"nan" artefacts from astype(str).
+    _blank_sentinels = {"nan", "none", "null", "", "na", "n/a"}
+    non_blank_mask = ~values.astype(str).str.strip().str.lower().isin(_blank_sentinels)
+    values = values[non_blank_mask]
+    row_pids = row_pids.loc[values.index] if hasattr(row_pids, "loc") else row_pids
+    if values.empty:
+        return None
+
     raw_values = values.astype(str)
-    # Detect dates in both YYYY-MM-DD and DD/MM/YYYY (and similar) formats
-    looks_like_date = (
-        raw_values.str.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}").mean() >= 0.5
-        or raw_values.str.match(r"^\d{1,2}[/-]\d{1,2}[/-]\d{4}").mean() >= 0.5
-    )
+    # Detect dates in both YYYY-MM-DD (ISO) and DD/MM/YYYY (European) formats
+    is_iso_date = raw_values.str.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}").mean() >= 0.5
+    is_dmy_date = raw_values.str.match(r"^\d{1,2}[/-]\d{1,2}[/-]\d{4}").mean() >= 0.5
+    looks_like_date = is_iso_date or is_dmy_date
     if looks_like_date:
+        use_dayfirst = bool(is_dmy_date and not is_iso_date)
         try:
             parsed_dates = pd.to_datetime(
-                raw_values, errors="coerce", dayfirst=True
+                raw_values, errors="coerce", format="mixed", dayfirst=use_dayfirst
             )
         except Exception:
-            parsed_dates = pd.to_datetime(raw_values, errors="coerce")
+            try:
+                parsed_dates = pd.to_datetime(
+                    raw_values, errors="coerce", dayfirst=use_dayfirst
+                )
+            except Exception:
+                parsed_dates = pd.to_datetime(raw_values, errors="coerce")
     else:
         parsed_dates = pd.Series(dtype="datetime64[ns]")
     if looks_like_date and parsed_dates.notna().sum() >= len(raw_values) * 0.5:
@@ -1232,7 +1321,9 @@ def _build_text_chart(column, values, row_pids, description=""):
             summary_str = f"{len(date_values):,} birth records · {len(frequencies):,} birth years"
         else:
             periods = date_values.dt.to_period("M").astype(str)
-            frequencies = periods.value_counts().sort_index().tail(36)
+            frequencies = periods.value_counts().sort_index()
+            if len(frequencies) > 120:
+                frequencies = frequencies.tail(120)
             labels = frequencies.index.tolist()
             pids_per_period = []
             for period in labels:
@@ -1240,7 +1331,7 @@ def _build_text_chart(column, values, row_pids, description=""):
                 pids_per_period.append(row_pids.loc[period_indices].tolist())
             summary_str = (
                 f"{len(date_values):,} dated records · "
-                f"latest {len(frequencies):,} months"
+                f"{len(frequencies):,} months"
             )
 
         return {
@@ -1300,18 +1391,13 @@ def build_single_column_chart(
     description="",
     row_pids=None,
 ):
-
-    if column.lower() in ("gender", "sex"):
-        print(
-            f"DEBUG column={column!r}, dtype={frame[column].dtype}, "
-            f"sample={frame[column].dropna().head(10).tolist()}, "
-            f"in_coded={column in coded_columns}, "
-            f"list={variable_lists.get(column)}"
-        )
-
     if row_pids is None:
         row_pids = extract_row_pids(frame)
     values = frame[column].dropna()
+    # Strip string sentinel blanks that may survive after astype/csv round-trip
+    _blank_sentinels = {"nan", "none", "null", "", "na", "n/a"}
+    _str_mask = values.astype(str).str.strip().str.lower().isin(_blank_sentinels)
+    values = values[~_str_mask]
     if values.empty:
         return None
     list_name = variable_lists.get(column)
