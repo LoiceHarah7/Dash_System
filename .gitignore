@@ -24,3 +24,7 @@ Thumbs.db
 saved_studies/*
 !saved_studies/.gitkeep
 saved_studies/**/
+merged/
+*.xlsx
+*.xls
+

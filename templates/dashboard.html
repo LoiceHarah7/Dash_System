@@ -129,6 +129,11 @@
   {% endif %}
 
   <section class="metrics">
+    {% if pid_candidates and unique_participant_count is defined %}
+      <button class="metric-card participants-card" id="participants-toggle" type="button" aria-expanded="false" aria-controls="participants-list-panel">
+        <span class="metric-icon teal">👤</span><span class="metric-label">Participants</span><strong>{{ "{:,}".format(unique_participant_count) }}</strong><small>unique · click to view list</small>
+      </button>
+    {% endif %}
     <article class="metric-card"><span class="metric-icon violet">▤</span><span class="metric-label">Records</span><strong>{{ "{:,}".format(dataset.rows) }}</strong><small>after cleaning</small></article>
     {% if dataset.expected_participants %}
       <article class="metric-card metric-expected-card">
@@ -143,6 +148,74 @@
     <button class="metric-card missing-pids-card" id="missing-pids-toggle" type="button" aria-expanded="false" aria-controls="missing-pid-records">
       <span class="metric-icon amber">✳</span><span class="metric-label">Missing PIDs</span><strong>{{ "{:,}".format(missing_pid_rows|length) }}</strong><small>rows without a PID · click to view</small>
     </button>
+  </section>
+
+  {# ── Participants list panel ─────────────────────────────────────────── #}
+  {% if pid_candidates and unique_participant_count is defined and unique_participant_count > 0 %}
+  <section class="participants-list-panel" id="participants-list-panel" hidden aria-label="Unique participants list">
+    <div class="section-heading">
+      <div><p class="eyebrow">PARTICIPANTS</p><h2>Unique Participants ({{ "{:,}".format(unique_participant_count) }})</h2></div>
+      <span class="muted">One entry per unique PID value · repeat visits collapsed</span>
+    </div>
+    <div class="participants-pill-grid">
+      {% for pid in unique_participant_pids %}
+        <span class="participant-pill">{{ pid }}</span>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {# ── Merge dataset button ────────────────────────────────────────────── #}
+  <button class="button merge-open-btn" id="merge-open-btn" type="button" aria-expanded="false" aria-controls="merge-panel">
+    <span>🔗</span> Merge New Dataset
+  </button>
+
+  {# ── Merge panel ─────────────────────────────────────────────────────── #}
+  <section class="merge-panel" id="merge-panel" hidden data-dataset-id="{{ dataset.id }}">
+    <div class="section-heading">
+      <div><p class="eyebrow">MERGE</p><h2>Merge a New Dataset into This Study</h2></div>
+      <button class="merge-close-btn" id="merge-close-btn" type="button" aria-label="Close merge panel">✕</button>
+    </div>
+    <p class="merge-intro">Upload an Excel file from the same study. Columns will be compared side by side — mismatches shown in red. You can add or drop columns before merging. <strong>Originals are never modified</strong> — the merged output is saved as a new file.</p>
+
+    {# Step 1: File upload #}
+    <div class="merge-step" id="merge-step-upload">
+      <h3 class="merge-step-title">Step 1 — Choose Excel file to merge</h3>
+      <div class="merge-upload-row">
+        <label class="merge-file-label" for="merge-file-input">
+          <span>📂</span> Browse…
+          <input type="file" id="merge-file-input" accept=".xlsx,.xls" class="merge-file-hidden">
+        </label>
+        <span class="merge-filename" id="merge-filename">No file chosen</span>
+        <button class="button merge-compare-btn" id="merge-compare-btn" type="button" disabled>Compare columns →</button>
+      </div>
+      <div class="merge-error" id="merge-error" hidden></div>
+    </div>
+
+    {# Step 2: Column comparison (populated by JS) #}
+    <div class="merge-step" id="merge-step-compare" hidden>
+      <h3 class="merge-step-title">Step 2 — Review column differences</h3>
+      <div class="merge-legend">
+        <span class="merge-legend-item match">✓ Both datasets</span>
+        <span class="merge-legend-item missing">✗ Missing in one</span>
+      </div>
+      <div class="merge-compare-grid" id="merge-compare-grid">
+        {# populated by JS #}
+      </div>
+      <div class="merge-actions-row">
+        <button class="button merge-back-btn" id="merge-back-btn" type="button">← Back</button>
+        <button class="button merge-execute-btn" id="merge-execute-btn" type="button">Merge datasets →</button>
+      </div>
+    </div>
+
+    {# Step 3: Result #}
+    <div class="merge-step" id="merge-step-result" hidden>
+      <h3 class="merge-step-title">Step 3 — Merge complete</h3>
+      <div class="merge-result-box" id="merge-result-box">
+        {# populated by JS #}
+      </div>
+      <button class="button merge-restart-btn" id="merge-restart-btn" type="button">Start another merge</button>
+    </div>
   </section>
 
   {% if pid_candidates %}
@@ -773,6 +846,7 @@
   </section>
 
   <script src="{{ url_for('static', filename='dashboard.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='merge.js') }}" defer></script>
   <script>
     // Dismiss the save-a-copy banner for this page session only
     (function () {

@@ -2419,6 +2419,29 @@ def dashboard(dataset_id):
         1 for chart in charts if not chart.get("is_grouped")
     )
 
+    # --- Unique participants: deduplicate PID values across repeat rows ---
+    # Collects one entry per distinct PID value, ignoring "Row N" fallbacks.
+    _seen_pids = set()
+    _unique_participant_pids = []
+    for rec in dataset.records:
+        pid_val = None
+        for c in pid_candidates:
+            val = rec.get(c)
+            if val is not None and str(val).strip() and str(val).strip().lower() not in ("nan", "none", ""):
+                pid_val = str(val).strip()
+                break
+        if pid_val and pid_val not in _seen_pids:
+            _seen_pids.add(pid_val)
+            _unique_participant_pids.append(pid_val)
+
+    # Natural sort so BCC-002 comes before BCC-010
+    def _natural_key(s):
+        return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
+
+    _unique_participant_pids.sort(key=_natural_key)
+    unique_participant_count = len(_unique_participant_pids)
+    unique_participant_pids = _unique_participant_pids
+
     observed_pids_set = set()
     for rec in dataset.records:
         for c in pid_candidates:
@@ -2460,6 +2483,8 @@ def dashboard(dataset_id):
         lilongwe_tracking=lilongwe_tracking,
         salima_tracking=salima_tracking,
         all_dataset_pids=all_dataset_pids,
+        unique_participant_count=unique_participant_count,
+        unique_participant_pids=unique_participant_pids,
     )
 
 
@@ -2885,6 +2910,163 @@ def clear_all_history():
         app.logger.exception("Could not clear study history")
         flash("Could not clear history. Database error occurred.", "error")
     return redirect(url_for("index"))
+
+
+@app.route("/studies/<int:dataset_id>/merge/compare", methods=["POST"])
+def merge_compare(dataset_id):
+    """Compare column structure of current dataset vs an uploaded Excel file.
+
+    Returns JSON:
+    {
+      "current_name": str,
+      "new_name": str,
+      "columns": [
+        {
+          "column": str,          # column name
+          "in_current": bool,
+          "in_new": bool,
+          "has_values_current": bool | null,  # null if not in current
+          "has_values_new": bool | null,       # null if not in new
+          "match": bool           # True if present in both
+        }, ...
+      ]
+    }
+    """
+    dataset = db.session.get(StudyDataset, dataset_id)
+    if dataset is None:
+        abort(404)
+    file = request.files.get("file")
+    if file is None or not file.filename:
+        return {"error": "No file uploaded."}, 400
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in (".xlsx", ".xls"):
+        return {"error": "Please upload an Excel file (.xlsx or .xls)."}, 400
+    try:
+        new_df = pd.read_excel(file)
+    except Exception as exc:
+        return {"error": f"Could not read the file: {exc}"}, 400
+
+    current_cols = list(dataset.column_names)
+    new_cols = list(new_df.columns)
+    current_set = {c.strip() for c in current_cols}
+    new_set = {c.strip() for c in new_cols}
+    all_cols = list(dict.fromkeys(current_cols + [c for c in new_cols if c.strip() not in current_set]))
+
+    current_df = pd.DataFrame(dataset.records, columns=dataset.column_names)
+
+    comparison = []
+    for col in all_cols:
+        in_cur = col.strip() in current_set
+        in_new = col.strip() in new_set
+
+        if in_cur:
+            series_cur = current_df[col] if col in current_df.columns else pd.Series(dtype=object)
+            has_values_cur = bool(series_cur.dropna().astype(str).str.strip().replace("", pd.NA).dropna().shape[0] > 0)
+        else:
+            has_values_cur = None
+
+        if in_new:
+            matched_new = next((c for c in new_df.columns if c.strip() == col.strip()), None)
+            if matched_new is not None:
+                series_new = new_df[matched_new]
+                has_values_new = bool(series_new.dropna().astype(str).str.strip().replace("", pd.NA).dropna().shape[0] > 0)
+            else:
+                has_values_new = None
+        else:
+            has_values_new = None
+
+        comparison.append({
+            "column": col,
+            "in_current": in_cur,
+            "in_new": in_new,
+            "has_values_current": has_values_cur,
+            "has_values_new": has_values_new,
+            "match": in_cur and in_new,
+        })
+
+    return {
+        "current_name": dataset.study_name,
+        "new_name": os.path.basename(file.filename),
+        "current_rows": len(current_df),
+        "new_rows": len(new_df),
+        "columns": comparison,
+    }
+
+
+@app.route("/studies/<int:dataset_id>/merge/execute", methods=["POST"])
+def merge_execute(dataset_id):
+    """Execute the merge after user has decided which columns to add/drop.
+
+    POST body (JSON):
+    {
+      "columns": ["col1", "col2", ...],  # final ordered column list to include
+      "drop_from_new": ["colX", ...]     # columns to exclude from new file
+    }
+    Plus multipart file: 'file' — the new Excel dataset.
+
+    Saves merged Excel to a temp folder inside dataset.saved_path (or a system temp dir).
+    Returns JSON: { "output_path": str, "total_rows": int, "current_rows": int, "new_rows": int }
+    """
+    dataset = db.session.get(StudyDataset, dataset_id)
+    if dataset is None:
+        abort(404)
+    file = request.files.get("file")
+    if file is None or not file.filename:
+        return {"error": "No file uploaded."}, 400
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in (".xlsx", ".xls"):
+        return {"error": "Please upload an Excel file (.xlsx or .xls)."}, 400
+
+    try:
+        import json as _json
+        final_columns = _json.loads(request.form.get("columns", "[]"))
+        drop_from_new = set(_json.loads(request.form.get("drop_from_new", "[]")))
+        new_df = pd.read_excel(file)
+    except Exception as exc:
+        return {"error": f"Could not process request: {exc}"}, 400
+
+    # --- Build copies, never touch originals ---
+    current_df = pd.DataFrame(dataset.records, columns=dataset.column_names).copy()
+    new_df = new_df.copy()
+
+    # Drop unwanted columns from new dataset
+    new_df = new_df.drop(columns=[c for c in drop_from_new if c in new_df.columns], errors="ignore")
+
+    # Align both DataFrames to the final column list
+    for col in final_columns:
+        if col not in current_df.columns:
+            current_df[col] = None
+        if col not in new_df.columns:
+            new_df[col] = None
+
+    current_df = current_df[final_columns]
+    new_df = new_df[final_columns]
+
+    merged_df = pd.concat([current_df, new_df], ignore_index=True)
+
+    # Save to output directory
+    base_dir = dataset.saved_path if (dataset.saved_path and os.path.isdir(dataset.saved_path)) else None
+    if base_dir is None:
+        import tempfile
+        base_dir = tempfile.gettempdir()
+
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "-", dataset.study_name).strip("-") or "study"
+    merge_dir = os.path.join(base_dir, "merged")
+    os.makedirs(merge_dir, exist_ok=True)
+    output_filename = f"{safe_name}-merged-{dataset_id}.xlsx"
+    output_path = os.path.join(merge_dir, output_filename)
+
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        current_df.to_excel(writer, sheet_name="Current dataset (copy)", index=False)
+        new_df.to_excel(writer, sheet_name="New dataset (copy)", index=False)
+        merged_df.to_excel(writer, sheet_name="Merged", index=False)
+
+    return {
+        "output_path": output_path,
+        "total_rows": len(merged_df),
+        "current_rows": len(current_df),
+        "new_rows": len(new_df),
+    }
 
 
 @app.route("/api/inspect-headers", methods=["POST"])

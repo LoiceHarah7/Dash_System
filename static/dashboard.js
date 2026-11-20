@@ -1,3 +1,5 @@
+const participantsToggle = document.getElementById("participants-toggle");
+const participantsListPanel = document.getElementById("participants-list-panel");
 const missingPidsToggle = document.getElementById("missing-pids-toggle");
 const missingPidRecords = document.getElementById("missing-pid-records");
 const allPidsToggle = document.getElementById("all-pids-toggle");
@@ -16,6 +18,7 @@ function togglePidRecords(toggle, section) {
   });
 }
 
+togglePidRecords(participantsToggle, participantsListPanel);
 togglePidRecords(missingPidsToggle, missingPidRecords);
 togglePidRecords(allPidsToggle, allPidRecords);
 togglePidRecords(pidGapsToggle, pidSequenceGaps);
