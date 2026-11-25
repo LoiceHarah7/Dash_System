@@ -477,3 +477,29 @@ window.navigateToPidRow = navigateToPidRow;
     });
   }
 })();
+
+/* ===== Form Section Minimise (Dictionary Sections) ===== */
+(function initFormSectionMinimise() {
+  const crfsView = document.getElementById("crfs-view");
+  if (!crfsView) return;
+
+  crfsView.addEventListener("click", (e) => {
+    const btn = e.target.closest(".section-minimise-btn");
+    if (!btn) return;
+    const section = btn.closest(".form-section");
+    if (!section) return;
+    const body = section.querySelector(".form-section-body");
+    if (!body) return;
+
+    const isExpanded = btn.getAttribute("aria-expanded") !== "false";
+    const nextExpanded = !isExpanded;
+    btn.setAttribute("aria-expanded", String(nextExpanded));
+    body.hidden = !nextExpanded;
+    section.classList.toggle("is-collapsed", !nextExpanded);
+
+    const icon = btn.querySelector(".section-minimise-icon");
+    if (icon) {
+      icon.textContent = nextExpanded ? "−" : "+";
+    }
+  });
+})();

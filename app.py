@@ -131,6 +131,27 @@ class StudyCodebook(db.Model):
     unmatched_variables = db.Column(db.JSON, nullable=False)
 
 
+class StudyHiddenColumn(db.Model):
+    """Stores which columns are locked/hidden for a given study dataset."""
+
+    __tablename__ = "study_hidden_column"
+
+    dataset_id = db.Column(
+        db.Integer, db.ForeignKey("study_dataset.id"), primary_key=True
+    )
+    column_name = db.Column(db.String(255), primary_key=True)
+
+
+def get_hidden_columns(dataset_id):
+    """Return list of locked/hidden column names for a dataset."""
+    rows = (
+        db.session.query(StudyHiddenColumn.column_name)
+        .filter_by(dataset_id=dataset_id)
+        .all()
+    )
+    return [r[0] for r in rows]
+
+
 class ParticipantTracking(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     dataset_id = db.Column(
@@ -3225,7 +3246,7 @@ def dashboard(dataset_id):
             if matching_col and matching_col not in label_maps:
                 label_maps[matching_col] = choices
 
-    hidden_columns = list(dataset.hidden_columns or [])
+    hidden_columns = get_hidden_columns(dataset.id)
     hidden_set = set(hidden_columns)
     visible_columns = [c for c in (dataset.column_names or []) if c not in hidden_set]
     if hidden_set:
@@ -3740,6 +3761,7 @@ def delete_study(dataset_id):
     try:
         StudyPidSelection.query.filter_by(dataset_id=dataset_id).delete()
         StudyCodebook.query.filter_by(dataset_id=dataset_id).delete()
+        StudyHiddenColumn.query.filter_by(dataset_id=dataset_id).delete()
         ParticipantTracking.query.filter_by(dataset_id=dataset_id).delete()
         db.session.delete(dataset)
         db.session.commit()
@@ -3757,6 +3779,7 @@ def clear_all_history():
     try:
         StudyPidSelection.query.delete()
         StudyCodebook.query.delete()
+        StudyHiddenColumn.query.delete()
         ParticipantTracking.query.delete()
         StudyDataset.query.delete()
         db.session.commit()
@@ -3971,46 +3994,46 @@ def update_hidden_columns(dataset_id):
     if not verify_admin_password(password):
         return jsonify({"ok": False, "error": "Incorrect password."}), 403
 
-    # Query only column_names and hidden_columns via raw SQL so we don't load
-    # the full StudyDataset ORM row (which includes massive records/charts_cache JSON).
+    # Query only column_names via raw SQL so we don't load the full
+    # StudyDataset ORM row (which includes massive records/charts_cache JSON).
     row = db.session.execute(
-        text("SELECT column_names, hidden_columns FROM study_dataset WHERE id = :id"),
+        text("SELECT column_names FROM study_dataset WHERE id = :id"),
         {"id": dataset_id},
     ).fetchone()
     if row is None:
         abort(404)
 
     column_names = json.loads(row[0]) if isinstance(row[0], str) else (row[0] or [])
-    current_hidden = json.loads(row[1]) if isinstance(row[1], str) else (row[1] or [])
     valid_cols = set(column_names)
 
-    if "hidden_columns" in payload and isinstance(payload["hidden_columns"], list):
-        new_hidden = [c for c in payload["hidden_columns"] if c in valid_cols]
-    elif "column" in payload:
-        col = payload.get("column")
-        if col not in valid_cols:
-            return jsonify({"ok": False, "error": "Unknown column."}), 400
-        locked = bool(payload.get("locked"))
-        hidden_set = set(current_hidden)
-        if locked:
-            hidden_set.add(col)
-        else:
-            hidden_set.discard(col)
-        new_hidden = [c for c in column_names if c in hidden_set]
-    else:
-        return jsonify({"ok": False, "error": "Missing column or hidden_columns."}), 400
-
     try:
-        db.session.execute(
-            text("UPDATE study_dataset SET hidden_columns = :v WHERE id = :id"),
-            {"v": json.dumps(new_hidden), "id": dataset_id},
-        )
+        if "hidden_columns" in payload and isinstance(payload["hidden_columns"], list):
+            new_hidden = [c for c in payload["hidden_columns"] if c in valid_cols]
+            StudyHiddenColumn.query.filter_by(dataset_id=dataset_id).delete()
+            for col in dict.fromkeys(new_hidden):
+                db.session.add(StudyHiddenColumn(dataset_id=dataset_id, column_name=col))
+        elif "column" in payload:
+            col = payload.get("column")
+            if col not in valid_cols:
+                return jsonify({"ok": False, "error": "Unknown column."}), 400
+            locked = bool(payload.get("locked"))
+            if locked:
+                existing = db.session.get(StudyHiddenColumn, (dataset_id, col))
+                if existing is None:
+                    db.session.add(StudyHiddenColumn(dataset_id=dataset_id, column_name=col))
+            else:
+                StudyHiddenColumn.query.filter_by(
+                    dataset_id=dataset_id, column_name=col
+                ).delete()
+        else:
+            return jsonify({"ok": False, "error": "Missing column or hidden_columns."}), 400
+
         db.session.commit()
     except SQLAlchemyError as exc:
         db.session.rollback()
         app.logger.exception("Could not save hidden columns for dataset %s", dataset_id)
         return jsonify({"ok": False, "error": "Could not save locked columns: " + str(exc)}), 500
-    return jsonify({"ok": True, "hidden_columns": new_hidden})
+    return jsonify({"ok": True, "hidden_columns": get_hidden_columns(dataset_id)})
 
 
 with app.app_context():
@@ -4039,7 +4062,24 @@ with app.app_context():
             # Clean up any orphan rows in child tables where dataset_id no longer exists
             conn.execute(text("DELETE FROM study_pid_selection WHERE dataset_id NOT IN (SELECT id FROM study_dataset)"))
             conn.execute(text("DELETE FROM study_codebook WHERE dataset_id NOT IN (SELECT id FROM study_dataset)"))
+            conn.execute(text("DELETE FROM study_hidden_column WHERE dataset_id NOT IN (SELECT id FROM study_dataset)"))
             conn.execute(text("DELETE FROM participant_tracking WHERE dataset_id IS NOT NULL AND dataset_id NOT IN (SELECT id FROM study_dataset)"))
+            # Migrate any legacy study_dataset.hidden_columns JSON into study_hidden_column
+            legacy_rows = conn.execute(
+                text("SELECT id, hidden_columns FROM study_dataset WHERE hidden_columns IS NOT NULL")
+            ).fetchall()
+            for ds_id, raw_hidden in legacy_rows:
+                cols = json.loads(raw_hidden) if isinstance(raw_hidden, str) else (raw_hidden or [])
+                for col in cols:
+                    exists = conn.execute(
+                        text("SELECT 1 FROM study_hidden_column WHERE dataset_id = :id AND column_name = :col"),
+                        {"id": ds_id, "col": col},
+                    ).fetchone()
+                    if not exists:
+                        conn.execute(
+                            text("INSERT INTO study_hidden_column (dataset_id, column_name) VALUES (:id, :col)"),
+                            {"id": ds_id, "col": col},
+                        )
             conn.commit()
         if db.session.get(AppSetting, "admin_password") is None:
             db.session.add(AppSetting(key="admin_password", value="DATA123"))

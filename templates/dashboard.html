@@ -846,8 +846,13 @@
       <div id="crfs-view">
         {% for form_title, form_info in form_sections.items() %}
         <section class="form-section" data-form-raw="{{ form_info.raw_form }}">
-          <h2 class="form-title">{{ form_title }}</h2>
-          <div class="chart-grid">
+          <div class="form-section-header">
+            <h2 class="form-title">{{ form_title }}</h2>
+            <button type="button" class="section-minimise-btn" aria-expanded="true" title="Minimise or expand {{ form_title }}">
+              <span class="section-minimise-icon" aria-hidden="true">−</span>
+            </button>
+          </div>
+          <div class="chart-grid form-section-body">
             {% for section in form_info.charts %}
               {% if section.related %}
                 <details class="related-chart-group">
