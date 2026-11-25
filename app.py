@@ -726,11 +726,7 @@ def _is_date_like_column_name(name):
     a number, because they are not check-all-that-apply options.
     """
     lower = str(name).lower()
-    date_hints = (
-        "date", "dob", "birth", "biopsy", "reported", "received",
-        "consent", "enrolled", "withdraw", "death", "died", "censor",
-        "progress", "start", "stop", "visit", "appointment",
-    )
+    date_hints = ("date", "dob", "birth", "timestamp")
     return any(kw in lower for kw in date_hints)
 
 
@@ -1678,13 +1674,13 @@ def build_single_column_chart(
         ordered_english = [
             value_labels.get(code, {}).get("en")
             or value_labels.get(code, {}).get("ny")
-            or f"Unlabelled ({code})"
+            or str(code)
             for code in category_codes
         ]
         ordered_chichewa = [
             value_labels.get(code, {}).get("ny")
             or value_labels.get(code, {}).get("en")
-            or f"Unlabelled ({code})"
+            or str(code)
             for code in category_codes
         ]
         pids_per_category = []
@@ -1862,14 +1858,163 @@ def dashboard_data(dataset, codebook=None):
     charts = []
 
     if not has_codebook:
-        # WITHOUT CODEBOOK: Display all dataset columns directly in charts
-        # using their exact dataset values. Exclude only PID identifiers.
+        # WITHOUT CODEBOOK: Use pattern-based grouping (group_question_columns)
+        # so that multi-response checkbox columns (e.g. q5_1, q5_2 … q5_n) are
+        # grouped into a single bar chart just like they are when a codebook is
+        # present.  Labels are derived from the sub-column name suffix rather
+        # than from a codebook response list.
         pid_cols = set(detect_pid_columns(frame.columns))
-        for column in dataset.column_names:
-            if column in pid_cols or column not in frame.columns:
+        original_headers = getattr(dataset, "original_headers", None) or {}
+        question_groups = group_question_columns(frame)
+        app.logger.info(
+            "Detected dashboard question groups (no-codebook) for study %s: %s",
+            dataset.id,
+            list(question_groups.keys())[:20],
+        )
+        for question_name, question_columns in question_groups.items():
+            # Skip PID columns and fully-empty groups
+            question_columns = [
+                c for c in question_columns
+                if c not in pid_cols
+                and c in frame.columns
+                and not frame[c].dropna().empty
+            ]
+            if not question_columns:
                 continue
-            if frame[column].dropna().empty:
+
+            if len(question_columns) > 1:
+                # --- Grouped multi-response chart (no codebook labels) ---
+                # Derive a readable label for each sub-column.
+                # Prefer: original header → suffix after stem → full column name.
+                def _label_for_subcol(col, stem=question_name):
+                    if col in original_headers:
+                        return original_headers[col]
+                    _, code, _ = extract_option_match(col)
+                    if code is not None:
+                        return f"Option {code}"
+                    # strip the stem prefix to get just the option part
+                    suffix = col[len(stem):].lstrip("_/.- ")
+                    return suffix if suffix else col
+
+                english_labels = [_label_for_subcol(c) for c in question_columns]
+                chichewa_labels = english_labels  # no translation without codebook
+
+                selected = pd.DataFrame(
+                    {
+                        column: frame[column].map(multiselect_selection)
+                        for column in question_columns
+                    }
+                )
+                counts = selected.sum(axis=0).astype(int)
+                total_selections = int(counts.sum())
+                participants_with_selections = int(selected.any(axis=1).sum())
+                pids_per_choice = [
+                    row_pids.loc[selected[col][selected[col]].index].tolist()
+                    for col in question_columns
+                ]
+                display_name = original_headers.get(question_name, question_name)
+                charts.append(
+                    {
+                        "name": display_name,
+                        "key": question_name,
+                        "description": "",
+                        "kind": "categories",
+                        "coded": False,
+                        "response_list": None,
+                        "is_grouped": True,
+                        "is_subcolumn": False,
+                        "is_base_column": False,
+                        "group_columns": question_columns,
+                        "variants": [
+                            {
+                                "type": "bar",
+                                "label": "Bar chart",
+                                "labels": english_labels,
+                                "labels_en": english_labels,
+                                "labels_ny": chichewa_labels,
+                                "values": [int(v) for v in counts.tolist()],
+                                "pids": pids_per_choice,
+                            }
+                        ],
+                        "summary": (
+                            f"{participants_with_selections:,} participants selected "
+                            f"{total_selections:,} options across "
+                            f"{len(question_columns):,} choices"
+                        ),
+                    }
+                )
+
+                # Individual sub-column donut charts
+                for sub_col, en_label in zip(question_columns, english_labels):
+                    sub_series = frame[sub_col].map(multiselect_selection)
+                    selected_cnt = int(sub_series.sum())
+                    unselected_cnt = int((~sub_series).sum())
+                    pct = (
+                        (selected_cnt / len(sub_series) * 100)
+                        if len(sub_series) > 0
+                        else 0
+                    )
+                    selected_pids = row_pids.loc[sub_series[sub_series].index].tolist()
+                    unselected_pids = row_pids.loc[sub_series[~sub_series].index].tolist()
+                    charts.append(
+                        {
+                            "name": sub_col,
+                            "description": f"Choice: {en_label}",
+                            "kind": "categories",
+                            "coded": False,
+                            "response_list": None,
+                            "is_grouped": False,
+                            "is_subcolumn": True,
+                            "is_base_column": False,
+                            "parent_group": display_name,
+                            "variants": [
+                                {
+                                    "type": "donut",
+                                    "label": "Donut chart",
+                                    "labels": [
+                                        f"Selected ({selected_cnt:,})",
+                                        f"Not selected ({unselected_cnt:,})",
+                                    ],
+                                    "labels_en": [
+                                        f"Selected ({selected_cnt:,})",
+                                        f"Not selected ({unselected_cnt:,})",
+                                    ],
+                                    "labels_ny": [
+                                        f"Zosankhidwa ({selected_cnt:,})",
+                                        f"Zosasankhidwa ({unselected_cnt:,})",
+                                    ],
+                                    "values": [selected_cnt, unselected_cnt],
+                                    "pids": [selected_pids, unselected_pids],
+                                }
+                            ],
+                            "summary": (
+                                f"{selected_cnt:,} of {len(sub_series):,} participants "
+                                f"selected ({pct:.1f}%) · {en_label}"
+                            ),
+                        }
+                    )
+
+                # Base column chart if the stem itself is also a column
+                if question_name in frame.columns and question_name not in pid_cols:
+                    base_chart = build_single_column_chart(
+                        question_name,
+                        frame,
+                        variable_lists={},
+                        response_lists={},
+                        coded_columns=set(),
+                        description="Raw question column",
+                        row_pids=row_pids,
+                    )
+                    if base_chart:
+                        base_chart["is_grouped"] = False
+                        base_chart["is_subcolumn"] = False
+                        base_chart["is_base_column"] = True
+                        base_chart["parent_group"] = display_name
+                        charts.append(base_chart)
                 continue
+
+            # --- Single column (no group) ---
+            column = question_columns[0]
             chart = build_single_column_chart(
                 column,
                 frame,
@@ -1882,7 +2027,7 @@ def dashboard_data(dataset, codebook=None):
                 chart["is_grouped"] = False
                 chart["is_subcolumn"] = False
                 chart["is_base_column"] = False
-                display_name = (getattr(dataset, "original_headers", None) or {}).get(column, column)
+                display_name = original_headers.get(column, column)
                 chart["key"] = column
                 chart["name"] = display_name
                 charts.append(chart)
