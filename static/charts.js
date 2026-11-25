@@ -312,7 +312,7 @@ function filteredVariant(variant, filterIndex) {
 
 /* ---------- rendering ---------- */
 
-function renderChart(chartIndex, variantIndex) {
+function renderChart(chartIndex, variantIndex, targetHost = null) {
   const chart = chartData[chartIndex];
   const rawVariant = chart.variants[variantIndex];
   if (!rawVariant) return;
@@ -322,8 +322,8 @@ function renderChart(chartIndex, variantIndex) {
   const showAll = chartShowAllMap.get(chartIndex) === true;
 
   // Update card toggle button if present
-  const toggleBtn = document.querySelector(`[data-toggle-chart-limit="${chartIndex}"]`);
-  if (toggleBtn) {
+  const toggleBtns = document.querySelectorAll(`[data-toggle-chart-limit="${chartIndex}"]`);
+  toggleBtns.forEach((toggleBtn) => {
     if (hasMoreThan10) {
       toggleBtn.hidden = false;
       toggleBtn.setAttribute("aria-expanded", String(showAll));
@@ -332,7 +332,7 @@ function renderChart(chartIndex, variantIndex) {
     } else {
       toggleBtn.hidden = true;
     }
-  }
+  });
 
   // Slice to 10 if not showing all
   const baseVariant = (hasMoreThan10 && !showAll) ? sliceVariant(rawVariant, 10) : rawVariant;
@@ -340,10 +340,10 @@ function renderChart(chartIndex, variantIndex) {
   const filterIndex = categoryFilters.get(chartIndex);
   const variant = filteredVariant(baseVariant, filterIndex);
   variant.labels = localizedLabels(variant);
-  const host = document.querySelector(
-    `[data-chart-host="${chartIndex}-${variantIndex}"]`,
-  );
-  if (!host) return;
+  const hosts = targetHost
+    ? [targetHost]
+    : [...document.querySelectorAll(`[data-chart-host="${chartIndex}-${variantIndex}"]`)];
+  if (!hosts.length) return;
 
   const count = variant.labels.length;
   const isVertical =
@@ -358,24 +358,26 @@ function renderChart(chartIndex, variantIndex) {
   else if (isRound) height = Math.max(320, count * 32 + 70);
   else if (isHorizontal) height = Math.max(200, count * ROW_HEIGHT + 28);
 
-  const svg = chartSvg(host, `${chart.name}, ${variant.label}`, height);
+  hosts.forEach((host) => {
+    const svg = chartSvg(host, `${chart.name}, ${variant.label}`, height);
 
-  if (isVertical) {
-    drawVerticalBars(svg, variant.labels, variant.values, variant.pids);
-  } else if (variant.type === "line") {
-    drawLine(svg, variant.labels, variant.values);
-  } else if (variant.type === "box") {
-    drawBoxPlot(svg, variant.summary);
-  } else if (variant.type === "pie") {
-    drawPie(svg, variant.labels, variant.values, height, variant.pids);
-  } else if (variant.type === "donut") {
-    drawDonut(svg, variant.labels, variant.values, height, variant.pids);
-  } else {
-    drawHorizontalBars(svg, variant.labels, variant.values, variant.pids);
-  }
+    if (isVertical) {
+      drawVerticalBars(svg, variant.labels, variant.values, variant.pids);
+    } else if (variant.type === "line") {
+      drawLine(svg, variant.labels, variant.values);
+    } else if (variant.type === "box") {
+      drawBoxPlot(svg, variant.summary);
+    } else if (variant.type === "pie") {
+      drawPie(svg, variant.labels, variant.values, height, variant.pids);
+    } else if (variant.type === "donut") {
+      drawDonut(svg, variant.labels, variant.values, height, variant.pids);
+    } else {
+      drawHorizontalBars(svg, variant.labels, variant.values, variant.pids);
+    }
+  });
 }
 
-function renderFrequencyTable(chartIndex) {
+function renderFrequencyTable(chartIndex, targetHost = null) {
   const chart = chartData[chartIndex];
   if (!chart || chart.kind !== "categories" || !chart.variants.length) return;
   const rawVariant = chart.variants[0];
@@ -389,44 +391,49 @@ function renderFrequencyTable(chartIndex) {
     categoryFilters.get(chartIndex),
   );
   const labels = localizedLabels(variant);
-  const host = document.querySelector(`[data-frequency-host="${chartIndex}"]`);
-  if (!host) return;
-  const table = document.createElement("table");
-  table.className = "frequency-table";
-  const head = document.createElement("thead");
-  const headingRow = document.createElement("tr");
-  for (const heading of [
-    chartLanguage === "ny" ? "Yankho" : "Response",
-    chartLanguage === "ny" ? "Chiwerengero" : "Count",
-  ]) {
-    const cell = document.createElement("th");
-    cell.textContent = heading;
-    headingRow.append(cell);
-  }
-  head.append(headingRow);
-  const body = document.createElement("tbody");
-  labels.forEach((label, index) => {
-    const row = document.createElement("tr");
-    const labelCell = document.createElement("td");
-    const countCell = document.createElement("td");
-    labelCell.textContent = label;
-    const pidList = variant.pids && variant.pids[index];
-    if (pidList && pidList.length) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "view-pids-btn";
-      btn.textContent = `${variant.values[index].toLocaleString()} ↗`;
-      btn.title = `View ${pidList.length} PIDs in this category`;
-      btn.addEventListener("click", () => showPidsModal(chart.name, label, pidList));
-      countCell.append(btn);
-    } else {
-      countCell.textContent = variant.values[index].toLocaleString();
+  const hosts = targetHost
+    ? [targetHost]
+    : [...document.querySelectorAll(`[data-frequency-host="${chartIndex}"]`)];
+  if (!hosts.length) return;
+
+  hosts.forEach((host) => {
+    const table = document.createElement("table");
+    table.className = "frequency-table";
+    const head = document.createElement("thead");
+    const headingRow = document.createElement("tr");
+    for (const heading of [
+      chartLanguage === "ny" ? "Yankho" : "Response",
+      chartLanguage === "ny" ? "Chiwerengero" : "Count",
+    ]) {
+      const cell = document.createElement("th");
+      cell.textContent = heading;
+      headingRow.append(cell);
     }
-    row.append(labelCell, countCell);
-    body.append(row);
+    head.append(headingRow);
+    const body = document.createElement("tbody");
+    labels.forEach((label, index) => {
+      const row = document.createElement("tr");
+      const labelCell = document.createElement("td");
+      const countCell = document.createElement("td");
+      labelCell.textContent = label;
+      const pidList = variant.pids && variant.pids[index];
+      if (pidList && pidList.length) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "view-pids-btn";
+        btn.textContent = `${variant.values[index].toLocaleString()} ↗`;
+        btn.title = `View ${pidList.length} PIDs in this category`;
+        btn.addEventListener("click", () => showPidsModal(chart.name, label, pidList));
+        countCell.append(btn);
+      } else {
+        countCell.textContent = variant.values[index].toLocaleString();
+      }
+      row.append(labelCell, countCell);
+      body.append(row);
+    });
+    table.append(head, body);
+    host.replaceChildren(table);
   });
-  table.append(head, body);
-  host.replaceChildren(table);
 }
 
 function normalizeCodeForBrowser(value) {
@@ -482,18 +489,105 @@ function renderLanguage() {
   });
 }
 
+/* ---------- category dimension (CRFs / Columns / Visits) ---------- */
+
+const crfsView = document.getElementById("crfs-view");
+const columnsView = document.getElementById("columns-view");
+const visitsView = document.getElementById("visits-view");
+
+let categoryDimension = "columns";
+const initialDimensionBtn = document.querySelector("[data-category-dimension].active");
+if (initialDimensionBtn) {
+  categoryDimension = initialDimensionBtn.dataset.categoryDimension;
+}
+
+function applyCategoryDimension() {
+  if (crfsView) crfsView.hidden = categoryDimension !== "crfs";
+  if (columnsView) columnsView.hidden = categoryDimension !== "columns";
+  if (visitsView) visitsView.hidden = categoryDimension !== "visits";
+
+  const isColumns = categoryDimension === "columns";
+  const isCrfs = categoryDimension === "crfs";
+  const isVisits = categoryDimension === "visits";
+
+  if (chartFieldSelect) chartFieldSelect.hidden = !isColumns;
+  if (chartFieldSelectLabel) chartFieldSelectLabel.hidden = !isColumns;
+
+  if (chartFormSelect) chartFormSelect.hidden = !isCrfs;
+  if (chartFormSelectLabel) chartFormSelectLabel.hidden = !isCrfs;
+
+  if (chartVisitSelect) chartVisitSelect.hidden = !isVisits;
+  if (chartVisitSelectLabel) chartVisitSelectLabel.hidden = !isVisits;
+
+  // Update field options if in columns view, or form options if in CRFs view
+  if (isColumns) {
+    updateFieldSelectOptions();
+  } else if (isCrfs) {
+    updateFormSelectOptions();
+  }
+
+  // Re-run filtering within whichever view is active
+  filterCharts();
+
+  // Charts in the now-visible view may never have been drawn if their host
+  // was hidden when the page first loaded. Re-render any that are empty.
+  document.querySelectorAll(
+    (categoryDimension === "crfs" ? "#crfs-view " : "") +
+    "[data-chart-host]:empty"
+  ).forEach((host) => {
+    const parts = host.dataset.chartHost.split("-").map(Number);
+    renderChart(parts[0], parts[1], host);
+  });
+}
+
+document.querySelectorAll("[data-category-dimension]").forEach((btn) => {
+  if (btn.disabled) return;
+  btn.addEventListener("click", () => {
+    if (btn.dataset.categoryDimension === categoryDimension) return;
+    categoryDimension = btn.dataset.categoryDimension;
+    document.querySelectorAll("[data-category-dimension]").forEach((b) => {
+      const active = b === btn;
+      b.classList.toggle("active", active);
+      b.setAttribute("aria-checked", String(active));
+    });
+    applyCategoryDimension();
+  });
+});
+
 /* ---------- view mode, search and field picker ---------- */
 
 let chartViewMode = "grouped";
 const chartSearch = document.getElementById("chart-search-input");
 const chartFieldSelect = document.getElementById("chart-field-select");
+const chartFieldSelectLabel = document.getElementById("chart-field-select-label") || document.querySelector('label[for="chart-field-select"]');
+const chartFormSelect = document.getElementById("chart-form-select");
+const chartFormSelectLabel = document.getElementById("chart-form-select-label") || document.querySelector('label[for="chart-form-select"]');
+const chartVisitSelect = document.getElementById("chart-visit-select");
+const chartVisitSelectLabel = document.getElementById("chart-visit-select-label") || document.querySelector('label[for="chart-visit-select"]');
 const chartSearchResults = document.getElementById("chart-search-results");
 const relatedGroupOpenStates = new Map();
 
-const chartCards = [...document.querySelectorAll(".chart-card[data-chart-name]")];
+function updateFormSelectOptions() {
+  if (!chartFormSelect) return;
+  if (chartFormSelect.options.length > 1) return;
+  const crfsRoot = document.getElementById("crfs-view");
+  if (!crfsRoot) return;
+  const sections = crfsRoot.querySelectorAll(".form-section");
+  sections.forEach((section) => {
+    const raw = section.dataset.formRaw || "";
+    const title = section.querySelector(".form-title")?.textContent.trim() || raw;
+    if (raw && ![...chartFormSelect.options].some((opt) => opt.value === raw)) {
+      const opt = document.createElement("option");
+      opt.value = raw;
+      opt.textContent = title;
+      chartFormSelect.append(opt);
+    }
+  });
+}
 
 function updateFieldSelectOptions() {
   if (!chartFieldSelect) return;
+  if (categoryDimension !== "columns") return;
   const previousValue = chartFieldSelect.value;
   chartFieldSelect.replaceChildren();
   const allOption = document.createElement("option");
@@ -502,7 +596,8 @@ function updateFieldSelectOptions() {
     chartViewMode === "grouped" ? "All questions / categories" : "All fields";
   chartFieldSelect.append(allOption);
 
-  const eligibleCards = chartCards.filter((card) => {
+  const activeRoot = document.getElementById("columns-view") || document;
+  const eligibleCards = [...activeRoot.querySelectorAll(".chart-card[data-chart-name]")].filter((card) => {
     if (chartViewMode === "grouped") {
       return card.dataset.isSubcolumn !== "true" && card.dataset.isBase !== "true";
     }
@@ -524,7 +619,7 @@ function updateFieldSelectOptions() {
 }
 
 function applyViewMode() {
-  chartCards.forEach((card) => {
+  document.querySelectorAll(".chart-card[data-chart-name]").forEach((card) => {
     const isSub = card.dataset.isSubcolumn === "true";
     const isBase = card.dataset.isBase === "true";
     const isGrouped = card.dataset.isGrouped === "true";
@@ -548,12 +643,22 @@ function applyViewMode() {
 }
 
 function filterCharts() {
+  const activeViewRoot = categoryDimension === "crfs"
+    ? document.getElementById("crfs-view")
+    : (categoryDimension === "columns" ? document.getElementById("columns-view") : null);
+  if (!activeViewRoot) {
+    if (chartSearchResults) chartSearchResults.textContent = "0 graphs";
+    return;
+  }
+
   const query = chartSearch?.value.trim().toLocaleLowerCase() || "";
-  const selectedField = chartFieldSelect?.value || "";
-  const relatedGroups = [...document.querySelectorAll(".related-chart-group")];
+  const selectedField = (categoryDimension === "columns" && chartFieldSelect) ? chartFieldSelect.value : "";
+  const selectedForm = (categoryDimension === "crfs" && chartFormSelect) ? chartFormSelect.value : "";
+  const relatedGroups = [...activeViewRoot.querySelectorAll(".related-chart-group")];
+  const activeCards = [...activeViewRoot.querySelectorAll(".chart-card[data-chart-name]")];
   let visibleCount = 0;
   let totalEligible = 0;
-  const hasFilter = Boolean(query || selectedField);
+  const hasFilter = Boolean(query || selectedField || selectedForm);
 
   if (hasFilter && relatedGroupOpenStates.size === 0) {
     relatedGroups.forEach((group) => {
@@ -561,7 +666,7 @@ function filterCharts() {
     });
   }
 
-  chartCards.forEach((card) => {
+  activeCards.forEach((card) => {
     const isSub = card.dataset.isSubcolumn === "true";
     const isBase = card.dataset.isBase === "true";
     const isGrouped = card.dataset.isGrouped === "true";
@@ -580,7 +685,13 @@ function filterCharts() {
 
     totalEligible += 1;
     const name = card.dataset.chartName;
+
+    // In CRFs view, check if card belongs to selectedForm
+    const cardSection = card.closest(".form-section");
+    const matchesForm = !selectedForm || (cardSection && cardSection.dataset.formRaw === selectedForm);
+
     const matches =
+      matchesForm &&
       name.toLocaleLowerCase().includes(query) &&
       (!selectedField || name === selectedField);
     card.hidden = !matches;
@@ -601,6 +712,16 @@ function filterCharts() {
     relatedGroupOpenStates.clear();
   }
 
+  // Hide empty or non-matching .form-section wrappers in CRFs view
+  document.querySelectorAll(".form-section").forEach((section) => {
+    if (selectedForm && section.dataset.formRaw !== selectedForm) {
+      section.hidden = true;
+    } else {
+      const anyVisible = section.querySelector(".chart-card:not([hidden])") !== null;
+      section.hidden = !anyVisible;
+    }
+  });
+
   if (chartSearchResults) {
     chartSearchResults.textContent = hasFilter
       ? `${visibleCount} of ${totalEligible} graphs`
@@ -609,7 +730,21 @@ function filterCharts() {
 }
 
 chartSearch?.addEventListener("input", filterCharts);
-chartFieldSelect?.addEventListener("change", filterCharts);
+chartFieldSelect?.addEventListener("change", () => {
+  if (categoryDimension === "columns") {
+    filterCharts();
+  }
+});
+chartFormSelect?.addEventListener("change", () => {
+  if (categoryDimension === "crfs") {
+    filterCharts();
+  }
+});
+chartVisitSelect?.addEventListener("change", () => {
+  if (categoryDimension === "visits") {
+    filterCharts();
+  }
+});
 
 document.querySelectorAll("[data-chart-mode]").forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -672,6 +807,7 @@ document.getElementById("label-language")?.addEventListener("change", (event) =>
 updateFieldSelectOptions();
 applyViewMode();
 renderLanguage();
+applyCategoryDimension();
 
 
 /* ---------- PID viewer modal ---------- */
@@ -725,7 +861,24 @@ function showPidsModal(chartName, categoryLabel, pidsList) {
   function renderChips(list) {
     if (!grid) return;
     grid.replaceChildren();
-    list.forEach((pid) => grid.append(makeChip(pid)));
+    const PAGE = 300;
+    const slice = list.slice(0, PAGE);
+    const frag = document.createDocumentFragment();
+    slice.forEach((pid) => frag.appendChild(makeChip(pid)));
+    // "Show all" expander when list exceeds PAGE
+    if (list.length > PAGE) {
+      const more = document.createElement("button");
+      more.className = "pid-chip pid-chip-more";
+      more.textContent = `+${(list.length - PAGE).toLocaleString()} more — show all`;
+      more.addEventListener("click", () => {
+        more.remove();
+        const rest = document.createDocumentFragment();
+        list.slice(PAGE).forEach((pid) => rest.appendChild(makeChip(pid)));
+        grid.appendChild(rest);
+      });
+      frag.appendChild(more);
+    }
+    grid.appendChild(frag);
     if (countEl) {
       const total = showingExcluded ? excludedPids.length : inPids.length;
       countEl.textContent = `${list.length.toLocaleString()} of ${total.toLocaleString()} PIDs`;
@@ -804,7 +957,10 @@ document.getElementById("pid-viewer-modal")?.addEventListener("click", (e) => {
 function downloadChartSnapshot(chartIndex, triggerBtn) {
   const chart = chartData[chartIndex];
   if (!chart) return;
-  const host = document.querySelector(`[data-chart-host^="${chartIndex}-"]`);
+  const card = triggerBtn?.closest(".chart-card");
+  const host = card
+    ? card.querySelector(`[data-chart-host^="${chartIndex}-"]`)
+    : document.querySelector(`[data-chart-host^="${chartIndex}-"]`);
   const svg = host ? host.querySelector("svg") : null;
   if (!svg) return;
 

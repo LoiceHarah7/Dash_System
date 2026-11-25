@@ -1,4 +1,4 @@
-﻿@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap');
 
 /* ===== Base ===== */
 :root {
@@ -2688,6 +2688,23 @@ tbody tr:last-child td {
   outline-offset: 2px;
 }
 
+/* "Show all N more" expander button inside the chip grid */
+.pid-chip-more {
+  cursor: pointer;
+  background: none;
+  border: 1px dashed #818cf8;
+  color: #818cf8;
+  border-radius: 999px;
+  padding: 0.2rem 0.75rem;
+  font-size: 0.78rem;
+  transition: background 0.15s, color 0.15s;
+}
+
+.pid-chip-more:hover {
+  background: #818cf8;
+  color: #fff;
+}
+
 /* hint text under the chip grid */
 .pid-modal-hint {
   padding: 0 1.5rem 0.75rem;
@@ -4025,4 +4042,75 @@ tbody tr:last-child td {
 
 .merge-restart-btn:hover {
   background: #e2e8f0;
+}
+
+/* ==========================================================================
+   Category Dimension & CRF Form Section Styles
+   ========================================================================== */
+.category-dimension-control {
+    display: inline-flex;
+    background: #f0f2f8;
+    padding: 3px;
+    border-radius: 9px;
+    gap: 2px;
+    margin-bottom: 14px;
+}
+
+.dimension-btn {
+    border: none;
+    background: transparent;
+    color: var(--muted, #64748b);
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 6px 16px;
+    border-radius: 7px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.dimension-btn:hover:not(:disabled) {
+    color: var(--ink, #1e293b);
+}
+
+.dimension-btn.active {
+    background: var(--purple, #7057df);
+    color: #fff;
+    box-shadow: 0 2px 5px rgba(112, 87, 223, 0.25);
+}
+
+.dimension-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.form-section {
+    margin-top: 2.2rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--line, #e2e8f0);
+}
+
+.form-section:first-child {
+    margin-top: 0.5rem;
+    padding-top: 0;
+    border-top: none;
+}
+
+.form-section[hidden] {
+    display: none;
+}
+
+.form-title {
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--ink, #1e293b);
+    margin: 0.8rem 0 1.2rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.form-title::before {
+    content: "📋";
+    font-size: 1.1rem;
 }

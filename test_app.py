@@ -1557,6 +1557,85 @@ class StudyDashTests(unittest.TestCase):
         self.assertNotIn(b"No chartable columns found", response.data)
 
 
+class ExcelSerialDateTests(unittest.TestCase):
+    """Tests for Excel-serial-to-ISO-date conversion (Part A upload-time and
+    Part B chart-time fallback)."""
+
+    def setUp(self):
+        app.config["TESTING"] = True
+        with app.app_context():
+            db.drop_all()
+            db.create_all()
+        self.client = app.test_client()
+
+    def tearDown(self):
+        with app.app_context():
+            db.session.remove()
+            db.engine.dispose()
+
+    def _chart(self, col_name, values):
+        """Build a single-column chart with no codebook."""
+        from app import build_single_column_chart
+        df = pd.DataFrame(
+            {col_name: values, "pid": [f"P{i}" for i in range(len(values))]}
+        )
+        pids = df["pid"]
+        return build_single_column_chart(col_name, df, {}, {}, set(), row_pids=pids)
+
+    def test_part_a_csv_serial_dates_converted_on_upload(self):
+        """Part A: _coerce_excel_serials_to_dates converts numeric date cols to ISO strings."""
+        from app import _coerce_excel_serials_to_dates
+        # 42936 = 2017-07-09, 43090 = 2017-12-11, 43200 = 2018-04-01
+        df = pd.DataFrame({
+            "consent_date": [42936, 43090, 43200],
+            "score": [1, 2, 3],
+        })
+        result = _coerce_excel_serials_to_dates(df)
+        for val in result["consent_date"]:
+            self.assertRegex(str(val), r"^\d{4}-\d{2}-\d{2}$",
+                             f"Expected ISO date string, got {val!r}")
+        # score column (no date keyword) must be unchanged
+        self.assertTrue(pd.api.types.is_numeric_dtype(result["score"]))
+
+    def test_part_b_stored_serials_render_as_date_chart(self):
+        """Part B: pre-existing integer serials with a date column name → date chart."""
+        # 45000 = 2023-03-15, 45010 = 2023-03-25
+        values = [45000, 45010, 45000, 45010, 45000]
+        chart = self._chart("visit_date", values)
+        self.assertIsNotNone(chart, "Expected a chart to be built")
+        self.assertEqual(chart.get("kind"), "date",
+                         f"Expected kind='date', got {chart.get('kind')!r}")
+
+    def test_part_b_dob_serials_render_as_year_chart(self):
+        """Part B: DOB serial numbers → year-bucket date chart."""
+        # 20000 ≈ 1954, 25000 ≈ 1968
+        values = [20000, 20000, 25000, 25000, 25000]
+        chart = self._chart("dob", values)
+        self.assertIsNotNone(chart)
+        self.assertEqual(chart.get("kind"), "date")
+        # DOB path groups by year → labels should be 4-digit year strings
+        labels = chart["variants"][0]["labels"]
+        self.assertTrue(all(len(lbl) == 4 and lbl.isdigit() for lbl in labels),
+                        f"Expected year labels, got {labels}")
+
+    def test_non_date_numeric_column_unchanged(self):
+        """visit_number / age / weight_kg must not be misidentified as serial dates."""
+        for col_name in ("visit_number", "age", "weight_kg"):
+            values = [1, 2, 3, 1, 2]
+            chart = self._chart(col_name, values)
+            self.assertIsNotNone(chart)
+            self.assertNotEqual(chart.get("kind"), "date",
+                                f"Column {col_name!r} should not produce a date chart")
+
+    def test_string_dates_unchanged(self):
+        """String dates like '30/05/2017' still go through the existing regex path."""
+        values = ["30/05/2017", "20/06/2017", "07/07/2017"]
+        chart = self._chart("visit_date", values)
+        self.assertIsNotNone(chart)
+        self.assertEqual(chart.get("kind"), "date",
+                         "String DD/MM/YYYY dates should still produce a date chart")
+
+
 class PersonalColumnImputation(unittest.TestCase):
     """Tests that personal names and DOB are never overwritten with global mode."""
 
@@ -1713,6 +1792,376 @@ class PersonalColumnImputation(unittest.TestCase):
         # BCC-02 follow up has Mary Banda
         self.assertEqual(cleaned.loc[3, "first_name"], "Mary")
         self.assertEqual(cleaned.loc[3, "last_name"], "Banda")
+
+
+class CRFGroupingTests(unittest.TestCase):
+    """Tests for the CRFs category grouping feature using RedCap data dictionaries."""
+
+    def setUp(self):
+        from app import app, db
+        app.config["TESTING"] = True
+        with app.app_context():
+            db.drop_all()
+            db.create_all()
+        self.client = app.test_client()
+
+    def tearDown(self):
+        from app import db
+        with app.app_context():
+            db.session.remove()
+            db.engine.dispose()
+
+    def test_parse_codebook_extracts_variable_forms_and_choices(self):
+        """RedCap data dictionary extracts variable_forms mapping and inline choices."""
+        from app import parse_codebook
+        import io
+
+        dict_csv = (
+            'Variable / Field Name,Form Name,Field Label,"Choices, Calculations, OR Slider Labels"\n'
+            'gender,demographics_contact_information,Gender,"1, Female | 2, Male"\n'
+            'ethnic,demographics_contact_information,Ethnicity,"1, African | 2, European"\n'
+            'ses_education,socioeconomical_status,Education Level,"1, None | 2, Primary | 3, Secondary"\n'
+            'hiv_status,medical_history,Patient\'s HIV Status,"1, Positive | 2, Negative"\n'
+        )
+        dict_file = io.BytesIO(dict_csv.encode("utf-8"))
+        dict_file.filename = "data_dictionary.csv"
+        df_dummy = pd.DataFrame({"gender": [1, 2], "ethnic": [1, 2], "ses_education": [1, 2], "hiv_status": [1, 2]})
+        result = parse_codebook(dict_file, df_dummy)
+
+        self.assertIn("variable_forms", result)
+        vforms = result["variable_forms"]
+        # Machine names
+        self.assertEqual(vforms["gender"], "demographics_contact_information")
+        self.assertEqual(vforms["ethnic"], "demographics_contact_information")
+        self.assertEqual(vforms["ses_education"], "socioeconomical_status")
+        self.assertEqual(vforms["hiv_status"], "medical_history")
+        # Display labels
+        self.assertEqual(vforms["Gender"], "demographics_contact_information")
+        self.assertEqual(vforms["Ethnicity"], "demographics_contact_information")
+        self.assertEqual(vforms["Education Level"], "socioeconomical_status")
+        # Slugs
+        self.assertEqual(vforms["education_level"], "socioeconomical_status")
+
+        # Insertion order preserved
+        forms_in_order = list(dict.fromkeys(vforms.values()))
+        self.assertEqual(
+            forms_in_order,
+            ["demographics_contact_information", "socioeconomical_status", "medical_history"]
+        )
+
+        # Choices extracted
+        self.assertIn("gender", result["lists"])
+        self.assertEqual(result["lists"]["gender"]["1"]["en"], "Female")
+        self.assertEqual(result["lists"]["gender"]["2"]["en"], "Male")
+
+    def test_dashboard_data_attaches_form_to_charts(self):
+        """dashboard_data assigns chart['form'] based on variable_forms mapping."""
+        from app import dashboard_data
+        from types import SimpleNamespace
+
+        data = pd.DataFrame({
+            "pid": ["P1", "P2"],
+            "gender": ["Female", "Male"],
+            "education": ["Primary", "Secondary"],
+            "unmapped_col": ["A", "B"],
+        })
+        dataset = SimpleNamespace(
+            id=10,
+            study_name="Form Test",
+            filename="data.csv",
+            column_names=list(data.columns),
+            records=data.to_dict(orient="records"),
+            clean_columns=None,
+        )
+        codebook_data = {
+            "variable_forms": {
+                "gender": "demographics_contact_information",
+                "education": "socioeconomical_status",
+            }
+        }
+        charts, _, _ = dashboard_data(dataset, codebook_data)
+        charts_by_name = {c["name"]: c for c in charts}
+
+        self.assertEqual(charts_by_name["gender"]["form"], "demographics_contact_information")
+        self.assertEqual(charts_by_name["education"]["form"], "socioeconomical_status")
+        self.assertIsNone(charts_by_name["unmapped_col"]["form"])
+
+    def test_dashboard_with_dictionary_defaults_to_crfs_view(self):
+        """Dashboard with data dictionary shows active CRFs button and renders form sections in order."""
+        import io
+
+        dataset_csv = "pid,gender,ses_education,hiv_status\nP1,1,2,1\nP2,2,3,2\n"
+        dict_csv = (
+            'Variable / Field Name,Form Name,Field Label,"Choices, Calculations, OR Slider Labels"\n'
+            'gender,demographics_contact_information,Gender,"1, Female | 2, Male"\n'
+            'ses_education,socioeconomical_status,Education,"1, None | 2, Primary | 3, Secondary"\n'
+            'hiv_status,medical_history,HIV Status,"1, Positive | 2, Negative"\n'
+        )
+        response = self.client.post(
+            "/upload",
+            data={
+                "study_name": "CRF Study",
+                "file": (io.BytesIO(dataset_csv.encode("utf-8")), "dataset.csv"),
+                "codebook": (io.BytesIO(dict_csv.encode("utf-8")), "data_dictionary.csv"),
+            },
+            content_type="multipart/form-data",
+            follow_redirects=True,
+        )
+        self.assertEqual(response.status_code, 200)
+
+        html = response.data.decode("utf-8")
+        # Segmented control exists
+        self.assertIn('data-category-dimension="crfs"', html)
+        self.assertIn('data-category-dimension="columns"', html)
+        self.assertIn('data-category-dimension="visits"', html)
+
+        # CRFs is the active dimension when dictionary is uploaded
+        self.assertIn('data-category-dimension="crfs"', html)
+        self.assertIn('id="crfs-view"', html)
+        self.assertIn('id="columns-view" hidden', html)
+        self.assertIn('id="visits-view" hidden', html)
+
+        # Dropdowns in search/filter bar
+        self.assertIn('id="chart-field-select"', html)
+        self.assertIn('id="chart-form-select"', html)
+        self.assertIn('id="chart-visit-select"', html)
+        self.assertIn('Choose form', html)
+        self.assertIn('Choose visit', html)
+        self.assertIn('<option value="">All forms</option>', html)
+        self.assertIn('<option value="demographics_contact_information">Demographics Contact Information</option>', html)
+        self.assertIn('<option value="socioeconomical_status">Socioeconomical Status</option>', html)
+        self.assertIn('<option value="medical_history">Medical History</option>', html)
+        self.assertIn('<option value="">All visits</option>', html)
+
+        # Form sections rendered in dictionary order
+        pos_demo = html.find('Demographics Contact Information')
+        pos_ses = html.find('Socioeconomical Status')
+        pos_med = html.find('Medical History')
+        self.assertTrue(pos_demo > 0, "Demographics section should exist")
+        self.assertTrue(pos_ses > 0, "Socioeconomical Status section should exist")
+        self.assertTrue(pos_med > 0, "Medical History section should exist")
+        self.assertTrue(pos_demo < pos_ses < pos_med, "Sections should appear in dictionary order")
+
+    def test_dashboard_without_dictionary_keeps_columns_active_and_disables_crfs(self):
+        """Dashboard without data dictionary keeps Columns active and disables CRFs button."""
+        import io
+
+        dataset_csv = "pid,gender,age\nP1,Female,30\nP2,Male,40\n"
+        response = self.client.post(
+            "/upload",
+            data={
+                "study_name": "No Dict Study",
+                "file": (io.BytesIO(dataset_csv.encode("utf-8")), "dataset.csv"),
+            },
+            content_type="multipart/form-data",
+            follow_redirects=True,
+        )
+        self.assertEqual(response.status_code, 200)
+
+        html = response.data.decode("utf-8")
+        # Columns is active
+        self.assertIn('data-category-dimension="columns"', html)
+        # CRFs is disabled
+        self.assertIn('data-category-dimension="crfs"', html)
+        self.assertIn('disabled', html)
+        # crfs-view is NOT rendered
+        self.assertNotIn('id="crfs-view"', html)
+        # columns-view is not hidden
+        self.assertIn('id="columns-view"', html)
+        self.assertNotIn('id="columns-view" hidden', html)
+        # Field dropdown is shown, form dropdown and visit dropdown are hidden
+        self.assertIn('id="chart-field-select"', html)
+        self.assertNotIn('id="chart-field-select" aria-label="Choose a field to view" hidden', html)
+        self.assertIn('id="chart-form-select" aria-label="Choose a form to view" hidden', html)
+        self.assertIn('id="chart-visit-select" aria-label="Choose a visit to view" hidden', html)
+
+
+class DashboardCacheTests(unittest.TestCase):
+    """Tests dashboard caching, invalidation, manual clear, and preview trimming."""
+
+    def setUp(self):
+        from app import app, db
+        self.app = app
+        self.db = db
+        app.config["TESTING"] = True
+        app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///:memory:"
+        self.client = app.test_client()
+        with app.app_context():
+            db.create_all()
+
+    def tearDown(self):
+        with self.app.app_context():
+            self.db.session.remove()
+            self.db.drop_all()
+
+    def test_dashboard_populates_cache_and_serves_cache_hit(self):
+        import io
+        from unittest.mock import patch
+        from app import StudyDataset
+
+        csv_data = "pid,gender,age\nP1,Female,30\nP2,Male,40\n"
+        res = self.client.post(
+            "/upload",
+            data={
+                "study_name": "Cache Test",
+                "file": (io.BytesIO(csv_data.encode("utf-8")), "data.csv"),
+            },
+            content_type="multipart/form-data",
+            follow_redirects=True,
+        )
+        self.assertEqual(res.status_code, 200)
+        html = res.data.decode("utf-8")
+        self.assertIn("Charts served from cache (built ", html)
+        self.assertIn("Clear chart cache", html)
+        self.assertIn("This can take 1–2 minutes for large studies.", html)
+
+        with self.app.app_context():
+            ds = self.db.session.query(StudyDataset).one()
+            self.assertIsNotNone(ds.charts_cache)
+            self.assertEqual(ds.charts_cache.get("_schema_version"), 1)
+            self.assertEqual(ds.charts_cache.get("_records_len"), 2)
+            ds_id = ds.id
+
+        # Second load should be a cache hit and NOT invoke dashboard_data
+        with patch("app.dashboard_data", side_effect=AssertionError("dashboard_data should not run on cache hit")):
+            res2 = self.client.get(f"/studies/{ds_id}")
+            self.assertEqual(res2.status_code, 200)
+            self.assertIn("Charts served from cache (built ", res2.data.decode("utf-8"))
+
+    def test_clear_cache_endpoint_clears_cache(self):
+        import io
+        from app import StudyDataset
+
+        csv_data = "pid,gender,age\nP1,Female,30\nP2,Male,40\n"
+        self.client.post(
+            "/upload",
+            data={
+                "study_name": "Clear Cache Study",
+                "file": (io.BytesIO(csv_data.encode("utf-8")), "data.csv"),
+            },
+            content_type="multipart/form-data",
+            follow_redirects=True,
+        )
+        with self.app.app_context():
+            ds = self.db.session.query(StudyDataset).one()
+            self.assertIsNotNone(ds.charts_cache)
+            ds_id = ds.id
+
+        # Clear cache without following redirect to verify DB state immediately
+        res = self.client.post(f"/studies/{ds_id}/clear-cache", follow_redirects=False)
+        self.assertEqual(res.status_code, 302)
+        with self.app.app_context():
+            ds = self.db.session.get(StudyDataset, ds_id)
+            self.assertIsNone(ds.charts_cache)
+
+        # Following redirect rebuilds the cache and shows flash message
+        res2 = self.client.get(f"/studies/{ds_id}")
+        self.assertEqual(res2.status_code, 200)
+        self.assertIn("Chart cache cleared. Next page load will rebuild charts.", res2.data.decode("utf-8"))
+        with self.app.app_context():
+            ds = self.db.session.get(StudyDataset, ds_id)
+            self.assertIsNotNone(ds.charts_cache)
+
+    def test_edit_and_drop_duplicate_invalidate_cache(self):
+        import io
+        from app import StudyDataset
+
+        csv_data = "pid,gender,age\nP1,Female,30\nP1,Male,31\nP2,Female,25\n"
+        self.client.post(
+            "/upload",
+            data={
+                "study_name": "Dup Invalidate Study",
+                "file": (io.BytesIO(csv_data.encode("utf-8")), "data.csv"),
+            },
+            content_type="multipart/form-data",
+            follow_redirects=True,
+        )
+        with self.app.app_context():
+            ds = self.db.session.query(StudyDataset).one()
+            self.assertIsNotNone(ds.charts_cache)
+            ds_id = ds.id
+
+        # Edit duplicate row -> must invalidate cache
+        res_edit = self.client.post(
+            f"/studies/{ds_id}/duplicate-row/edit",
+            data={"row_index": "1", "column": "gender", "value": "Female"},
+            follow_redirects=False,
+        )
+        self.assertEqual(res_edit.status_code, 302)
+        with self.app.app_context():
+            ds = self.db.session.get(StudyDataset, ds_id)
+            self.assertIsNone(ds.charts_cache)
+
+        # Reload dashboard -> rebuilds cache
+        self.client.get(f"/studies/{ds_id}")
+        with self.app.app_context():
+            ds = self.db.session.get(StudyDataset, ds_id)
+            self.assertIsNotNone(ds.charts_cache)
+
+        # Drop duplicate row -> must invalidate cache
+        res_drop = self.client.post(
+            f"/studies/{ds_id}/duplicate-row/drop",
+            data={"row_index": "1"},
+            follow_redirects=False,
+        )
+        self.assertEqual(res_drop.status_code, 302)
+        with self.app.app_context():
+            ds = self.db.session.get(StudyDataset, ds_id)
+            self.assertIsNone(ds.charts_cache)
+
+    def test_save_codebook_mapping_invalidates_cache(self):
+        import io
+        from app import StudyDataset
+
+        dataset_csv = "pid,q1\nP1,1\nP2,2\n"
+        codebook_csv = (
+            "list_name,name,label::English\n"
+            "list_a,1,Yes\n"
+            "list_a,2,No\n"
+            "list_b,1,Male\n"
+            "list_b,2,Female\n"
+        )
+        self.client.post(
+            "/upload",
+            data={
+                "study_name": "Codebook Invalidate Study",
+                "file": (io.BytesIO(dataset_csv.encode("utf-8")), "data.csv"),
+                "codebook": (io.BytesIO(codebook_csv.encode("utf-8")), "cb.csv"),
+            },
+            content_type="multipart/form-data",
+            follow_redirects=True,
+        )
+        with self.app.app_context():
+            ds = self.db.session.query(StudyDataset).one()
+            self.assertIsNotNone(ds.charts_cache)
+            ds_id = ds.id
+
+        res_map = self.client.post(
+            f"/studies/{ds_id}/codebook-mapping",
+            data={"column": "q1", "list_name": "list_a"},
+            follow_redirects=False,
+        )
+        self.assertEqual(res_map.status_code, 302)
+        with self.app.app_context():
+            ds = self.db.session.get(StudyDataset, ds_id)
+            self.assertIsNone(ds.charts_cache)
+
+    def test_preview_is_trimmed_to_limit(self):
+        from types import SimpleNamespace
+        from app import dashboard_data, PREVIEW_ROW_LIMIT
+
+        records = [{"pid": f"P{i}", "age": 20 + (i % 50)} for i in range(PREVIEW_ROW_LIMIT + 50)]
+        dataset = SimpleNamespace(
+            id=99,
+            study_name="Trim Test",
+            filename="trim.csv",
+            column_names=["pid", "age"],
+            records=records,
+            original_headers=None,
+            clean_columns=None,
+        )
+        _, preview, _ = dashboard_data(dataset, None)
+        self.assertEqual(len(preview), PREVIEW_ROW_LIMIT)
 
 
 if __name__ == "__main__":

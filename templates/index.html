@@ -1,287 +1,331 @@
 {% extends "base.html" %}
 {% block title %}Studies · StudyDash{% endblock %}
 {% block content %}
-  <section class="hero">
+<section class="hero">
+  <div>
+    <p class="eyebrow">YOUR RESEARCH, AT A GLANCE</p>
+    <h1>Turn study data into<br><span>clear decisions.</span></h1>
+    <p class="intro">Upload a dataset once — we'll clean it, create its dedicated loading folder, and keep the dashboard
+      ready whenever you need it.</p>
+  </div>
+  <div class="hero-art" aria-hidden="true">
+    <div class="art-card"><i></i><i></i><i></i><b></b></div>
+    <div class="art-dot"></div>
+  </div>
+</section>
+
+{# ── Saved dashboards / Main active studies ─────────────────────────── #}
+<section class="studies-section" id="saved-dashboards">
+  <div class="section-heading">
     <div>
-      <p class="eyebrow">YOUR RESEARCH, AT A GLANCE</p>
-      <h1>Turn study data into<br><span>clear decisions.</span></h1>
-      <p class="intro">Upload a dataset once — we'll clean it, create its dedicated loading folder, and keep the dashboard ready whenever you need it.</p>
+      <p class="eyebrow">SAVED DASHBOARDS</p>
+      <h2>Your studies <span class="count">{{ datasets|length }}</span></h2>
     </div>
-    <div class="hero-art" aria-hidden="true"><div class="art-card"><i></i><i></i><i></i><b></b></div><div class="art-dot"></div></div>
-  </section>
+    <a href="#upload-new" class="button upload-shortcut-btn">+ Upload new dataset</a>
+  </div>
 
-  {# ── Saved dashboards / Main active studies ─────────────────────────── #}
-  <section class="studies-section" id="saved-dashboards">
-    <div class="section-heading">
-      <div>
-        <p class="eyebrow">SAVED DASHBOARDS</p>
-        <h2>Your studies <span class="count">{{ datasets|length }}</span></h2>
-      </div>
-      <a href="#upload-new" class="button upload-shortcut-btn">+ Upload new dataset</a>
-    </div>
-
-    {% if datasets %}
-      <div class="study-cards-grid">
-        {% for study in datasets %}
-          <div class="study-main-card">
-            <div class="study-main-card-header">
-              <div class="study-icon-wrap">
-                <span class="study-icon {% if study.saved_path %}study-icon-saved{% endif %}" title="{% if study.saved_path %}File folder: {{ study.saved_path }}{% else %}No local path recorded{% endif %}">
-                  {% if study.saved_path %}📂{% else %}▤{% endif %}
-                </span>
-              </div>
-              <div class="study-header-text">
-                <h3 class="study-title">
-                  <a href="{{ url_for('dashboard', dataset_id=study.id) }}">{{ study.study_name }}</a>
-                </h3>
-                <span class="study-filename">{{ study.filename }} · Uploaded {{ study.uploaded_at.strftime('%b %d, %Y') }}</span>
-              </div>
-              <div class="study-actions-cluster">
-                <a class="button primary study-open-btn" href="{{ url_for('dashboard', dataset_id=study.id) }}">
-                  Open Dashboard →
-                </a>
-                <form method="post" action="{{ url_for('delete_study', dataset_id=study.id) }}" onsubmit="return confirm('Are you sure you want to delete &quot;{{ study.study_name }}&quot;? This cannot be undone.');" style="display:inline;">
-                  <button type="submit" class="button danger study-del-btn" title="Delete this study">
-                    🗑 Delete
-                  </button>
-                </form>
-              </div>
-            </div>
-
-            {# Folder path display & change option #}
-            <div class="study-folder-banner">
-              <div class="folder-banner-left">
-                <span class="folder-icon">📁</span>
-                <div class="folder-info">
-                  <span class="folder-caption">Study Loading Folder:</span>
-                  {% if study.saved_path %}
-                    <code class="folder-path-display" title="{{ study.saved_path }}">{{ study.saved_path }}</code>
-                  {% else %}
-                    <span class="folder-path-empty">No folder assigned</span>
-                  {% endif %}
-                </div>
-              </div>
-              <details class="folder-change-details">
-                <summary class="folder-change-toggle" title="Change folder path">✏️ Change Path</summary>
-                <form class="folder-change-form" method="post" action="{{ url_for('save_dataset_path', dataset_id=study.id) }}">
-                  <input type="hidden" name="return_to" value="index">
-                  <input type="text" name="saved_path" class="folder-path-input" placeholder="e.g. C:\Research\Studies\Study1" value="{{ study.saved_path or '' }}" required>
-                  <button type="submit" class="button small">Save</button>
-                </form>
-              </details>
-            </div>
-
-            <div class="study-card-footer">
-              <div class="study-stats-pills">
-                {% if study.expected_participants %}
-                  <span class="stat-pill pill-expected" title="Total expected participants for this study">👥 <strong>{{ "{:,}".format(study.expected_participants) }}</strong> expected</span>
-                {% endif %}
-                <span class="stat-pill"><strong>{{ "{:,}".format(study.rows) }}</strong> rows</span>
-                <span class="stat-pill"><strong>{{ "{:,}".format(study.columns) }}</strong> columns</span>
-                {% if study.clean_columns and study.clean_columns|length > 1 %}
-                  <span class="stat-pill pill-key" title="Key: {{ study.clean_columns|join(' + ') }}">🔑 {{ study.clean_columns|join('+') | truncate(30, True, '…') }}</span>
-                {% endif %}
-                {% if study.duplicates_removed %}
-                  <span class="stat-pill pill-cleaned">{{ study.duplicates_removed }} duplicates removed</span>
-                {% endif %}
-                {% if study.missing_values_filled %}
-                  <span class="stat-pill pill-cleaned">{{ study.missing_values_filled }} missing filled</span>
-                {% endif %}
-              </div>
-            </div>
-          </div>
-        {% endfor %}
-      </div>
-    {% else %}
-      <div class="empty-state">
-        <span>▤</span>
-        <strong>No dashboards yet</strong>
-        <p>Upload your first dataset below — once processed, its dedicated loading folder will be created and listed here so you can open it anytime without re-uploading.</p>
-      </div>
-    {% endif %}
-  </section>
-
-  {# ── Upload new dataset ────────────────────────────────────────── #}
-  <section class="upload-card" id="upload-new">
-    <div class="section-heading">
-      <div><p class="eyebrow">ADD A NEW STUDY</p><h2>Upload study data</h2></div>
-      <span class="file-badge">CSV · TSV · XLSX · XLS</span>
-    </div>
-    <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data">
-      <div class="field-block">
-        <label class="field-label" for="study_name">Study name</label>
-        <input id="study_name" name="study_name" type="text" maxlength="160" placeholder="e.g. Community Health Survey 2025" required>
-      </div>
-
-      <div class="field-block">
-        <label class="field-label" for="expected_participants">
-          Expected number of participants <span class="optional-badge">optional</span>
-        </label>
-        <input id="expected_participants" name="expected_participants" type="number" min="1" step="1" placeholder="e.g. 500">
-        <p class="field-hint">Target number of participants planned for this study. This will be prominently displayed on your dashboard.</p>
-      </div>
-
-      <label class="dropzone" for="file">
-        <span class="upload-icon">↑</span>
-        <strong id="file-name">Choose a data file to upload</strong>
-        <span id="file-details" aria-live="polite">CSV, TSV or Excel · up to 25 MB per request</span>
-        <input id="file" name="file" type="file" accept=".csv,.tsv,.xlsx,.xls" required>
-      </label>
-
-      {# ── Record identifier & Duplicate detection options ── #}
-      <div class="cleaning-options-card">
-        <div class="cleaning-options-header">
-          <span class="field-label" style="margin-bottom: 2px;">Record Identifier &amp; Duplicate Detection Key</span>
-          <p class="field-hint">
-            Choose which column(s) identify a unique record. Combining columns ensures that participant rows from different visits or instances are not falsely flagged as duplicates.
-          </p>
+  {% if datasets %}
+  <div class="study-cards-grid">
+    {% for study in datasets %}
+    <div class="study-main-card">
+      <div class="study-main-card-header">
+        <div class="study-icon-wrap">
+          <span class="study-icon {% if study.saved_path %}study-icon-saved{% endif %}"
+            title="{% if study.saved_path %}File folder: {{ study.saved_path }}{% else %}No local path recorded{% endif %}">
+            {% if study.saved_path %}📂{% else %}▤{% endif %}
+          </span>
         </div>
-
-        <div class="cleaning-radio-group">
-          <label class="cleaning-radio-option">
-            <input type="radio" name="clean_mode" value="pid" id="clean_mode_pid" checked>
-            <div class="radio-body">
-              <span class="radio-label-title">PID column only <span class="radio-badge">Default</span></span>
-              <span class="radio-label-desc">Standard single-visit study: duplicates are detected by participant ID column alone.</span>
-            </div>
-          </label>
-
-          <label class="cleaning-radio-option">
-            <input type="radio" name="clean_mode" value="first_three" id="clean_mode_first_three">
-            <div class="radio-body">
-              <div class="radio-title-row">
-                <span class="radio-label-title">First 3 columns combined</span>
-                <span class="radio-badge pill-blue">Repeat Visits / Instances</span>
-              </div>
-              <div class="first-three-row" id="first-three-cols-row">
-                <div class="col-pill-step"><span class="col-step-num">1</span><span class="col-step-name" id="first-col-1">Column 1</span></div>
-                <span class="col-row-divider">+</span>
-                <div class="col-pill-step"><span class="col-step-num">2</span><span class="col-step-name" id="first-col-2">Column 2</span></div>
-                <span class="col-row-divider">+</span>
-                <div class="col-pill-step"><span class="col-step-num">3</span><span class="col-step-name" id="first-col-3">Column 3</span></div>
-              </div>
-              <span class="first-three-hint" id="first-three-cols-display">Upload a file above to load column names</span>
-            </div>
-          </label>
-
-          <label class="cleaning-radio-option">
-            <input type="radio" name="clean_mode" value="custom" id="clean_mode_custom">
-            <div class="radio-body">
-              <span class="radio-label-title">Custom columns</span>
-              <span class="radio-label-desc">Choose specific columns to combine into one identifier for duplicate detection.</span>
-            </div>
-          </label>
+        <div class="study-header-text">
+          <h3 class="study-title">
+            <a href="{{ url_for('dashboard', dataset_id=study.id) }}">{{ study.study_name }}</a>
+          </h3>
+          <span class="study-filename">{{ study.filename }} · Uploaded {{ study.uploaded_at.strftime('%b %d, %Y')
+            }}</span>
         </div>
-
-        <div id="custom-columns-container" class="custom-columns-container" style="display: none;">
-          <div class="custom-cols-header">
-            <div class="custom-cols-title-wrap">
-              <span class="custom-cols-prompt">Select custom columns to combine:</span>
-              <span class="muted" id="custom-cols-count">0 selected</span>
-            </div>
-            <div class="custom-cols-search-box">
-              <span class="search-icon">🔍</span>
-              <input type="text" id="custom-cols-search-input" placeholder="Search columns by name…" autocomplete="off">
-            </div>
-          </div>
-          <div id="custom-columns-list" class="custom-columns-chips">
-            <p class="muted-note" id="custom-columns-placeholder">Please select a data file above to load available columns.</p>
-          </div>
-          <div class="custom-cols-footer" id="custom-cols-footer" style="display: none;">
-            <button type="button" class="button small custom-cols-expand-btn" id="btn-expand-custom-cols">
-              <span>⤢</span> <span id="custom-cols-expand-label">Show all columns ▾</span>
+        <div class="study-actions-cluster">
+          <a class="button primary study-open-btn" href="{{ url_for('dashboard', dataset_id=study.id) }}">
+            Open Dashboard →
+          </a>
+          <form method="post" action="{{ url_for('delete_study', dataset_id=study.id) }}"
+            onsubmit="return confirm('Are you sure you want to delete &quot;{{ study.study_name }}&quot;? This cannot be undone.');"
+            style="display:inline;">
+            <button type="submit" class="button danger study-del-btn" title="Delete this study">
+              🗑 Delete
             </button>
-            <span class="custom-cols-view-count" id="custom-cols-view-count">Showing first 10 columns</span>
-          </div>
+          </form>
         </div>
       </div>
 
-      <label class="codebook-upload" for="codebook">
-        <span class="codebook-icon">⌗</span>
-        <span class="codebook-copy"><strong>Study codebook <span>optional</span></strong><small id="codebook-details">CSV or Excel · common code, value, variable, and label columns supported</small></span>
-        <span class="codebook-action">Choose file</span>
-        <input id="codebook" name="codebook" type="file" accept=".csv,.xlsx,.xls">
-      </label>
-      <p class="codebook-help">Code, variable/response-list, and label columns are detected from common names. Language labels are optional; unclear formats are saved with a review warning.</p>
-      <button class="button primary full-width" type="submit">Clean data &amp; build dashboard <span>→</span></button>
-    </form>
-    <p class="privacy-note">Your file is cleaned, a local storage folder is created, and your dashboard is stored in your database.</p>
-  </section>
-
-  {# ── History section at the bottom ─────────────────────────────── #}
-  <section class="history-section" id="study-history">
-    <div class="section-heading history-heading">
-      <div>
-        <p class="eyebrow">ACTIVITY LOG</p>
-        <h2>Study Upload History <span class="count">{{ datasets|length }}</span></h2>
+      {# Folder path display & change option #}
+      <div class="study-folder-banner">
+        <div class="folder-banner-left">
+          <span class="folder-icon">📁</span>
+          <div class="folder-info">
+            <span class="folder-caption">Study Loading Folder:</span>
+            {% if study.saved_path %}
+            <code class="folder-path-display" title="{{ study.saved_path }}">{{ study.saved_path }}</code>
+            {% else %}
+            <span class="folder-path-empty">No folder assigned</span>
+            {% endif %}
+          </div>
+        </div>
+        <details class="folder-change-details">
+          <summary class="folder-change-toggle" title="Change folder path">✏️ Change Path</summary>
+          <form class="folder-change-form" method="post"
+            action="{{ url_for('save_dataset_path', dataset_id=study.id) }}">
+            <input type="hidden" name="return_to" value="index">
+            <input type="text" name="saved_path" class="folder-path-input" placeholder="e.g. C:\Research\Studies\Study1"
+              value="{{ study.saved_path or '' }}" required>
+            <button type="submit" class="button small">Save</button>
+          </form>
+        </details>
       </div>
-      {% if datasets %}
-        <form method="post" action="{{ url_for('clear_all_history') }}" onsubmit="return confirm('⚠️ Are you sure you want to clear ALL study history? This will delete all saved dashboards, datasets, and tracking records. This action cannot be undone.');">
-          <button type="submit" class="button danger clear-history-btn" id="btn-clear-history">
-            🗑 Clear All History
-          </button>
-        </form>
-      {% endif %}
+
+      <div class="study-card-footer">
+        <div class="study-stats-pills">
+          {% if study.expected_participants %}
+          <span class="stat-pill pill-expected" title="Total expected participants for this study">👥 <strong>{{
+              "{:,}".format(study.expected_participants) }}</strong> expected</span>
+          {% endif %}
+          <span class="stat-pill"><strong>{{ "{:,}".format(study.rows) }}</strong> rows</span>
+          <span class="stat-pill"><strong>{{ "{:,}".format(study.columns) }}</strong> columns</span>
+          {% if study.clean_columns and study.clean_columns|length > 1 %}
+          <span class="stat-pill pill-key" title="Key: {{ study.clean_columns|join(' + ') }}">🔑 {{
+            study.clean_columns|join('+') | truncate(30, True, '…') }}</span>
+          {% endif %}
+          {% if study.duplicates_removed %}
+          <span class="stat-pill pill-cleaned">{{ study.duplicates_removed }} duplicates removed</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <span>▤</span>
+    <strong>No dashboards yet</strong>
+    <p>Upload your first dataset below — once processed, its dedicated loading folder will be created and listed here so
+      you can open it anytime without re-uploading.</p>
+  </div>
+  {% endif %}
+</section>
+
+{# ── Upload new dataset ────────────────────────────────────────── #}
+<section class="upload-card" id="upload-new">
+  <div class="section-heading">
+    <div>
+      <p class="eyebrow">ADD A NEW STUDY</p>
+      <h2>Upload study data</h2>
+    </div>
+    <span class="file-badge">CSV · TSV · XLSX · XLS</span>
+  </div>
+  <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data">
+    <div class="field-block">
+      <label class="field-label" for="study_name">Study name</label>
+      <input id="study_name" name="study_name" type="text" maxlength="160"
+        placeholder="e.g. Community Health Survey 2025" required>
     </div>
 
-    {% if datasets %}
-      <div class="table-wrap history-table-wrap">
-        <table class="history-table">
-          <thead>
-            <tr>
-              <th style="width: 45px;">#</th>
-              <th>Study Name</th>
-              <th>Upload Date</th>
-              <th>Source File</th>
-              <th>Loading Folder</th>
-              <th>Records</th>
-              <th style="text-align: right;">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for s in datasets %}
-              <tr>
-                <td>{{ loop.index }}</td>
-                <td>
-                  <strong><a href="{{ url_for('dashboard', dataset_id=s.id) }}">{{ s.study_name }}</a></strong>
-                </td>
-                <td>{{ s.uploaded_at.strftime('%b %d, %Y at %H:%M') }}</td>
-                <td><code>{{ s.filename }}</code></td>
-                <td>
-                  {% if s.saved_path %}
-                    <code class="folder-path-cell" title="{{ s.saved_path }}">📂 {{ s.saved_path | truncate(45, True, '…') }}</code>
-                  {% else %}
-                    <span class="muted">—</span>
-                  {% endif %}
-                </td>
-                <td>
-                  <div>{{ "{:,}".format(s.rows) }} rows × {{ s.columns }} cols</div>
-                  {% if s.expected_participants %}
-                    <div class="history-subtext">👥 {{ "{:,}".format(s.expected_participants) }} expected</div>
-                  {% endif %}
-                  {% if s.clean_columns and s.clean_columns|length > 1 %}
-                    <div class="history-subtext">🔑 {{ s.clean_columns|join('+') | truncate(26, True, '…') }}</div>
-                  {% endif %}
-                </td>
-                <td style="text-align: right; white-space: nowrap;">
-                  <a class="button small history-open-btn" href="{{ url_for('dashboard', dataset_id=s.id) }}">Open</a>
-                  <form method="post" action="{{ url_for('delete_study', dataset_id=s.id) }}" onsubmit="return confirm('Delete &quot;{{ s.study_name }}&quot;?');" style="display:inline;">
-                    <button type="submit" class="button danger small history-del-btn" title="Delete this study">🗑</button>
-                  </form>
-                </td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    {% else %}
-      <div class="empty-state">
-        <span>🕒</span>
-        <strong>No upload history yet</strong>
-        <p>When you upload datasets, a complete activity log will be recorded here.</p>
-      </div>
-    {% endif %}
-  </section>
+    <div class="field-block">
+      <label class="field-label" for="expected_participants">
+        Expected number of participants <span class="optional-badge">optional</span>
+      </label>
+      <input id="expected_participants" name="expected_participants" type="number" min="1" step="1"
+        placeholder="e.g. 500">
+      <p class="field-hint">Target number of participants planned for this study. This will be prominently displayed on
+        your dashboard.</p>
+    </div>
 
-  <script src="{{ url_for('static', filename='upload.js') }}" defer></script>
+    <label class="dropzone" for="file">
+      <span class="upload-icon">↑</span>
+      <strong id="file-name">Choose a data file to upload</strong>
+      <span id="file-details" aria-live="polite">CSV, TSV or Excel · up to 25 MB per request</span>
+      <input id="file" name="file" type="file" accept=".csv,.tsv,.xlsx,.xls" required>
+    </label>
+
+    {# ── Record identifier & Duplicate detection options ── #}
+    <div class="cleaning-options-card">
+      <div class="cleaning-options-header">
+        <span class="field-label" style="margin-bottom: 2px;">Record Identifier &amp; Duplicate Detection Key</span>
+        <p class="field-hint">
+          Choose which column(s) identify a unique record. Combining columns ensures that participant rows from
+          different visits or instances are not falsely flagged as duplicates.
+        </p>
+      </div>
+
+      <div class="cleaning-radio-group">
+        <label class="cleaning-radio-option">
+          <input type="radio" name="clean_mode" value="pid" id="clean_mode_pid" checked>
+          <div class="radio-body">
+            <span class="radio-label-title">PID column only <span class="radio-badge">Default</span></span>
+            <span class="radio-label-desc">Standard single-visit study: duplicates are detected by participant ID column
+              alone.</span>
+          </div>
+        </label>
+
+        <label class="cleaning-radio-option">
+          <input type="radio" name="clean_mode" value="first_three" id="clean_mode_first_three">
+          <div class="radio-body">
+            <div class="radio-title-row">
+              <span class="radio-label-title">First 3 columns combined</span>
+              <span class="radio-badge pill-blue">Repeat Visits / Instances</span>
+            </div>
+            <div class="first-three-row" id="first-three-cols-row">
+              <div class="col-pill-step"><span class="col-step-num">1</span><span class="col-step-name"
+                  id="first-col-1">Column 1</span></div>
+              <span class="col-row-divider">+</span>
+              <div class="col-pill-step"><span class="col-step-num">2</span><span class="col-step-name"
+                  id="first-col-2">Column 2</span></div>
+              <span class="col-row-divider">+</span>
+              <div class="col-pill-step"><span class="col-step-num">3</span><span class="col-step-name"
+                  id="first-col-3">Column 3</span></div>
+            </div>
+            <span class="first-three-hint" id="first-three-cols-display">Upload a file above to load column names</span>
+          </div>
+        </label>
+
+        <label class="cleaning-radio-option">
+          <input type="radio" name="clean_mode" value="custom" id="clean_mode_custom">
+          <div class="radio-body">
+            <span class="radio-label-title">Custom columns</span>
+            <span class="radio-label-desc">Choose specific columns to combine into one identifier for duplicate
+              detection.</span>
+          </div>
+        </label>
+      </div>
+
+      <div id="custom-columns-container" class="custom-columns-container" style="display: none;">
+        <div class="custom-cols-header">
+          <div class="custom-cols-title-wrap">
+            <span class="custom-cols-prompt">Select custom columns to combine:</span>
+            <span class="muted" id="custom-cols-count">0 selected</span>
+          </div>
+          <div class="custom-cols-search-box">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="custom-cols-search-input" placeholder="Search columns by name…" autocomplete="off">
+          </div>
+        </div>
+        <div id="custom-columns-list" class="custom-columns-chips">
+          <p class="muted-note" id="custom-columns-placeholder">Please select a data file above to load available
+            columns.</p>
+        </div>
+        <div class="custom-cols-footer" id="custom-cols-footer" style="display: none;">
+          <button type="button" class="button small custom-cols-expand-btn" id="btn-expand-custom-cols">
+            <span>⤢</span> <span id="custom-cols-expand-label">Show all columns ▾</span>
+          </button>
+          <span class="custom-cols-view-count" id="custom-cols-view-count">Showing first 10 columns</span>
+        </div>
+      </div>
+    </div>
+
+    <label class="codebook-upload" for="codebook">
+      <span class="codebook-icon">⌗</span>
+      <span class="codebook-copy">
+        <strong>Study codebook <span>optional</span></strong>
+        <small id="codebook-details">CSV or Excel · maps numeric codes to labels (e.g. 1 → Male, 2 → Female)</small>
+      </span>
+      <span class="codebook-action">Choose file</span>
+      <input id="codebook" name="codebook" type="file" accept=".csv,.xlsx,.xls">
+    </label>
+    <p class="codebook-help">Maps codes to labels. If you also upload a data dictionary below, the codebook's labels
+      take priority for any variable both files cover.</p>
+
+    <label class="codebook-upload" for="dictionary">
+      <span class="codebook-icon">☰</span>
+      <span class="codebook-copy">
+        <strong>Data dictionary <span>optional</span></strong>
+        <small id="dictionary-details">RedCap data dictionary · maps variables to CRF forms (Demographics, Medical
+          History, …)</small>
+      </span>
+      <span class="codebook-action">Choose file</span>
+      <input id="dictionary" name="dictionary" type="file" accept=".csv,.xlsx,.xls">
+    </label>
+    <p class="codebook-help">Enables the CRFs view on the dashboard. Forms come from the dictionary; labels from the
+      codebook above (or from the dictionary's <code>Choices</code> column if no codebook is uploaded).</p>
+    <button class="button primary full-width" type="submit">Clean data &amp; build dashboard <span>→</span></button>
+  </form>
+  <p class="privacy-note">Your file is cleaned, a local storage folder is created, and your dashboard is stored in your
+    database.</p>
+</section>
+
+{# ── History section at the bottom ─────────────────────────────── #}
+<section class="history-section" id="study-history">
+  <div class="section-heading history-heading">
+    <div>
+      <p class="eyebrow">ACTIVITY LOG</p>
+      <h2>Study Upload History <span class="count">{{ datasets|length }}</span></h2>
+    </div>
+    {% if datasets %}
+    <form method="post" action="{{ url_for('clear_all_history') }}"
+      onsubmit="return confirm('⚠️ Are you sure you want to clear ALL study history? This will delete all saved dashboards, datasets, and tracking records. This action cannot be undone.');">
+      <button type="submit" class="button danger clear-history-btn" id="btn-clear-history">
+        🗑 Clear All History
+      </button>
+    </form>
+    {% endif %}
+  </div>
+
+  {% if datasets %}
+  <div class="table-wrap history-table-wrap">
+    <table class="history-table">
+      <thead>
+        <tr>
+          <th style="width: 45px;">#</th>
+          <th>Study Name</th>
+          <th>Upload Date</th>
+          <th>Source File</th>
+          <th>Loading Folder</th>
+          <th>Records</th>
+          <th style="text-align: right;">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in datasets %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td>
+            <strong><a href="{{ url_for('dashboard', dataset_id=s.id) }}">{{ s.study_name }}</a></strong>
+          </td>
+          <td>{{ s.uploaded_at.strftime('%b %d, %Y at %H:%M') }}</td>
+          <td><code>{{ s.filename }}</code></td>
+          <td>
+            {% if s.saved_path %}
+            <code class="folder-path-cell"
+              title="{{ s.saved_path }}">📂 {{ s.saved_path | truncate(45, True, '…') }}</code>
+            {% else %}
+            <span class="muted">—</span>
+            {% endif %}
+          </td>
+          <td>
+            <div>{{ "{:,}".format(s.rows) }} rows × {{ s.columns }} cols</div>
+            {% if s.expected_participants %}
+            <div class="history-subtext">👥 {{ "{:,}".format(s.expected_participants) }} expected</div>
+            {% endif %}
+            {% if s.clean_columns and s.clean_columns|length > 1 %}
+            <div class="history-subtext">🔑 {{ s.clean_columns|join('+') | truncate(26, True, '…') }}</div>
+            {% endif %}
+          </td>
+          <td style="text-align: right; white-space: nowrap;">
+            <a class="button small history-open-btn" href="{{ url_for('dashboard', dataset_id=s.id) }}">Open</a>
+            <form method="post" action="{{ url_for('delete_study', dataset_id=s.id) }}"
+              onsubmit="return confirm('Delete &quot;{{ s.study_name }}&quot;?');" style="display:inline;">
+              <button type="submit" class="button danger small history-del-btn" title="Delete this study">🗑</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <span>🕒</span>
+    <strong>No upload history yet</strong>
+    <p>When you upload datasets, a complete activity log will be recorded here.</p>
+  </div>
+  {% endif %}
+</section>
+
+<script src="{{ url_for('static', filename='upload.js') }}" defer></script>
 {% endblock %}

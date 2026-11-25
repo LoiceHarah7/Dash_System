@@ -305,3 +305,16 @@ if (codebookInput) {
       : "CSV or Excel · common code, value, variable, and label columns supported";
   });
 }
+
+const dictionaryInput = document.getElementById("dictionary");
+
+if (dictionaryInput) {
+  const dictionaryDetails = document.getElementById("dictionary-details");
+
+  dictionaryInput.addEventListener("change", () => {
+    const [file] = dictionaryInput.files;
+    dictionaryDetails.textContent = file
+      ? `${file.name} · ready to upload`
+      : "RedCap data dictionary · maps variables to CRF forms (Demographics, Medical History, …)";
+  });
+}

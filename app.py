@@ -1,6 +1,10 @@
+import hashlib
 import io
+import json
 import os
 import re
+import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from zipfile import BadZipFile
@@ -35,6 +39,14 @@ app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 
 db = SQLAlchemy(app)
 
+# Schema version for StudyDataset.charts_cache.
+# Bump this number whenever chart-building, grouping, or caching structures change
+# so stale cached entries are automatically invalidated and rebuilt on next load.
+_SCHEMA_VERSION = 1
+
+# Maximum rows included in dashboard data preview payload to prevent DOM bloating
+PREVIEW_ROW_LIMIT = 200
+
 
 class StudyDataset(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -60,6 +72,7 @@ class StudyDataset(db.Model):
     clean_mode = db.Column(db.String(50), nullable=True)
     # Maps sanitized header -> original header (for display only)
     original_headers = db.Column(db.JSON, nullable=True)
+    charts_cache = db.Column(db.JSON, nullable=True)
 
 
 class StudyPidSelection(db.Model):
@@ -350,6 +363,7 @@ def clean_dataframe(
     dataframe.columns = make_unique_headers(dataframe.columns)
     dataframe = dataframe.replace([float("inf"), float("-inf")], float("nan"))
     pid_columns = set(detect_pid_columns(dataframe.columns))
+
     empty_columns = [
         column
         for column in dataframe.columns
@@ -359,60 +373,68 @@ def clean_dataframe(
     duplicates_removed = 0
     dataframe = dataframe.reset_index(drop=True)
 
-    # --- Per-participant forward/back-fill for FIXED IDENTITY columns only ---
-    # Only names and date-of-birth are ffilled across repeat visits.
-    # Event dates, consent dates, and single-instance survey responses are
-    # intentionally left as NaN so their chart counts reflect actual records.
-    if pid_column and pid_column in dataframe.columns:
-        for column in dataframe.columns:
-            if column == pid_column:
-                continue
-            if dataframe[column].isna().any() and is_fixed_demographic_column(column):
-                dataframe[column] = dataframe.groupby(pid_column, sort=False)[
-                    column
-                ].transform(lambda s: s.ffill().bfill())
+    # --- Per-participant forward/back-fill (DISABLED) ---
+    # Previously filled fixed demographic columns (names, DOB) across repeat
+    # visits. Now disabled: blanks stay blank, and charts count only non-null
+    # cells so participant totals are not inflated by repeat rows.
+    #
+    # if pid_column and pid_column in dataframe.columns:
+    #     for column in dataframe.columns:
+    #         if column == pid_column:
+    #             continue
+    #         if dataframe[column].isna().any() and is_fixed_demographic_column(column):
+    #             dataframe[column] = dataframe.groupby(pid_column, sort=False)[
+    #                 column
+    #             ].transform(lambda s: s.ffill().bfill())
 
+    # Missing values are intentionally NOT filled. `missing_values_filled` is
+    # kept at 0 for backward compatibility with the cleaning report;
+    # `missing_values_retained` records how many nulls actually remain.
     missing_values_filled = 0
-    for column in dataframe.columns:
-        missing_count = int(dataframe[column].isna().sum())
-        if not missing_count:
-            continue
-        if column in preserve_missing_columns:
-            continue
-        # Never fill personal/date columns with the global mode.
-        if is_personal_or_date_column(column, dataframe[column], pid_columns=pid_columns):
-            continue
-        # Never mode/median-fill a sparse column where each PID has at most 1
-        # non-null value (e.g. a one-time consent date in a repeat-visit dataset).
-        # Filling would artificially clone that single instance into every row.
-        # Only apply this guard when we have a genuine PID column (not a fallback
-        # first-column) AND the dataset has multiple rows per participant.
-        if (
-            pid_column
-            and pid_column in dataframe.columns
-            and pid_column in pid_columns  # must be a true PID, not a fallback
-        ):
-            pid_counts = dataframe.groupby(pid_column, sort=False)[column].count()
-            max_per_pid = int(pid_counts.max())
-            # Also check the dataset has repeat rows (some PIDs appear > 1 time)
-            pid_row_counts = dataframe[pid_column].value_counts()
-            has_repeats = bool((pid_row_counts > 1).any())
-            if max_per_pid <= 1 and has_repeats:
-                continue
-        missing_values_filled += missing_count
-        if (
-            pd.api.types.is_numeric_dtype(dataframe[column])
-            and column not in categorical_columns
-        ):
-            median = dataframe[column].median()
-            dataframe[column] = dataframe[column].fillna(
-                0 if pd.isna(median) else median
-            )
-        else:
-            mode = dataframe[column].mode(dropna=True)
-            dataframe[column] = dataframe[column].fillna(
-                mode.iloc[0] if not mode.empty else "Unknown"
-            )
+    missing_values_retained = int(dataframe.isna().sum().sum())
+
+    # --- Global mode/median fill (DISABLED) ---
+    # Previously filled blanks with a per-column mode (categorical) or median
+    # (numeric), with a guard to skip per-participant columns in repeat-visit
+    # datasets. Now disabled entirely.
+    #
+    # for column in dataframe.columns:
+    #     missing_count = int(dataframe[column].isna().sum())
+    #     if not missing_count:
+    #         continue
+    #     if column in preserve_missing_columns:
+    #         continue
+    #     # Never fill personal/date columns with the global mode.
+    #     if is_personal_or_date_column(column, dataframe[column], pid_columns=pid_columns):
+    #         continue
+    #     # Never mode/median-fill a sparse column where each PID has at most 1
+    #     # non-null value (e.g. a one-time consent date in a repeat-visit dataset).
+    #     # Filling would artificially clone that single instance into every row.
+    #     if (
+    #         pid_column
+    #         and pid_column in dataframe.columns
+    #         and pid_column in pid_columns  # must be a true PID, not a fallback
+    #     ):
+    #         pid_counts = dataframe.groupby(pid_column, sort=False)[column].count()
+    #         max_per_pid = int(pid_counts.max())
+    #         pid_row_counts = dataframe[pid_column].value_counts()
+    #         has_repeats = bool((pid_row_counts > 1).any())
+    #         if max_per_pid <= 1 and has_repeats:
+    #             continue
+    #     missing_values_filled += missing_count
+    #     if (
+    #         pd.api.types.is_numeric_dtype(dataframe[column])
+    #         and column not in categorical_columns
+    #     ):
+    #         median = dataframe[column].median()
+    #         dataframe[column] = dataframe[column].fillna(
+    #             0 if pd.isna(median) else median
+    #         )
+    #     else:
+    #         mode = dataframe[column].mode(dropna=True)
+    #         dataframe[column] = dataframe[column].fillna(
+    #             mode.iloc[0] if not mode.empty else "Unknown"
+    #         )
 
     def json_value(value):
         if pd.isna(value):
@@ -429,7 +451,14 @@ def clean_dataframe(
         {column: json_value(value) for column, value in row.items()}
         for row in dataframe.to_dict(orient="records")
     ]
-    return dataframe, duplicates_removed, missing_values_filled, records
+
+    return (
+        dataframe,
+        duplicates_removed,
+        missing_values_filled,
+        missing_values_retained,
+        records,
+    )
 
 
 def detect_csv_delimiter(filename, line):
@@ -452,6 +481,46 @@ def detect_csv_delimiter(filename, line):
     return "\t" if tab_count > comma_count else ","
 
 
+_EXCEL_SERIAL_DATE_HINTS = (
+    "date", "dob", "birth", "consent", "enrolled", "enrollment",
+    "visit", "appointment", "biopsy", "reported", "received",
+    "withdraw", "death", "died", "censor", "progress",
+    "start_date", "stop_date", "end_date",
+)
+# Plausible Excel serial range: 1954-01-01 (19723) to 2089-12-31 (~69337).
+# Using slightly wider [20000, 80000] to give headroom.
+_EXCEL_SERIAL_MIN = 20000
+_EXCEL_SERIAL_MAX = 80000
+
+
+def _coerce_excel_serials_to_dates(df):
+    """Convert numeric columns that look like Excel serial dates into ISO date
+    strings (YYYY-MM-DD).  Applies only to columns whose name suggests a date
+    and whose non-null values are ≥80% in [20000, 80000] (roughly 1954-2089).
+    """
+    for col in df.columns:
+        if not pd.api.types.is_numeric_dtype(df[col]):
+            continue
+        col_lower = str(col).lower()
+        if not any(kw in col_lower for kw in _EXCEL_SERIAL_DATE_HINTS):
+            continue
+        nums = df[col].dropna()
+        if nums.empty:
+            continue
+        in_range = nums.between(_EXCEL_SERIAL_MIN, _EXCEL_SERIAL_MAX)
+        if in_range.mean() < 0.8:
+            continue
+        try:
+            converted = pd.to_datetime(
+                nums[in_range], unit="D", origin="1899-12-30", errors="coerce"
+            ).dt.strftime("%Y-%m-%d")
+            df[col] = df[col].astype(object)
+            df.loc[nums[in_range].index, col] = converted.values
+        except Exception:
+            pass  # leave column unchanged if conversion fails
+    return df
+
+
 def read_upload(upload):
     filename = getattr(upload, "filename", "") or ""
     extension = os.path.splitext(filename)[1].lower()
@@ -463,9 +532,11 @@ def read_upload(upload):
         sep = detect_csv_delimiter(filename, line)
         if pos is not None and hasattr(upload, "seek"):
             upload.seek(pos)
-        return pd.read_csv(upload, sep=sep, low_memory=False)
+        df = pd.read_csv(upload, sep=sep, low_memory=False)
+        return _coerce_excel_serials_to_dates(df)
     if extension in (".xlsx", ".xls"):
-        return pd.read_excel(upload)
+        df = pd.read_excel(upload)
+        return _coerce_excel_serials_to_dates(df)
     raise ValueError("Upload a CSV or Excel file (.csv, .xlsx, .xls).")
 
 
@@ -522,6 +593,25 @@ def normalize_code(value):
         except (InvalidOperation, ValueError):
             pass
     return text
+
+
+def _excel_serial_to_datetime(value):
+    """Convert a single Excel serial number to a pandas Timestamp, or None."""
+    try:
+        ts = pd.to_datetime(value, unit="D", origin="1899-12-30")
+        return ts
+    except Exception:
+        return None
+
+
+def _looks_like_excel_serials(series):
+    """Return True if ≥50% of the non-null values in *series* (numeric) are
+    in the plausible Excel-serial range [20000, 80000].
+    """
+    nums = pd.to_numeric(series, errors="coerce").dropna()
+    if nums.empty:
+        return False
+    return nums.between(_EXCEL_SERIAL_MIN, _EXCEL_SERIAL_MAX).mean() >= 0.5
 
 
 def extract_option_match(column):
@@ -1043,7 +1133,10 @@ def parse_codebook(upload, data_frame):
         ("listname", "list", "responselist", "responselistname", "choicegroup")
     )
     variable_header = find_header(
-        ("variable", "variablename", "question", "questionname", "field", "fieldname")
+        (
+            "variable", "variablename", "variablefieldname", "question",
+            "questionname", "field", "fieldname",
+        )
     )
     code_header = find_header(
         ("name", "code", "value", "optioncode", "choicecode", "responsecode")
@@ -1055,6 +1148,7 @@ def parse_codebook(upload, data_frame):
             "labelen",
             "english",
             "label",
+            "fieldlabel",
             "valuelabel",
             "optionlabel",
             "choicelabel",
@@ -1069,6 +1163,15 @@ def parse_codebook(upload, data_frame):
             "ny",
         )
     )
+    form_header = find_header(
+        ("formname", "form", "instrumentname", "instrument", "crfname", "crf")
+    )
+    field_label_header = find_header(
+        ("fieldlabel", "label", "labelenglish", "englishlabel", "description")
+    )
+    choices_header = find_header(
+        ("choicescalculationsorsliderlabels", "choices", "options", "calculationorsliderlabels")
+    )
 
     data_columns = list(data_frame.columns)
     column_lookup = {column.casefold(): column for column in data_columns}
@@ -1082,12 +1185,40 @@ def parse_codebook(upload, data_frame):
     explicit_variable_lists = {}
     source_columns = [str(column) for column in codebook_frame.columns]
     group_header = list_header or variable_header
-    if code_header is None:
+
+    # Parse inline choices from RedCap data dictionaries (Choices, Calculations, OR Slider Labels)
+    if choices_header is not None and variable_header is not None:
+        for _, row in codebook_frame.iterrows():
+            var_val = row[variable_header]
+            choices_val = row[choices_header]
+            if is_missing(var_val) or is_missing(choices_val):
+                continue
+            raw_choices = str(choices_val).strip()
+            if not raw_choices:
+                continue
+            var_name = str(var_val).strip()
+            choice_map = {}
+            for item in raw_choices.split("|"):
+                item = item.strip()
+                if not item:
+                    continue
+                if "," in item:
+                    code_part, label_part = item.split(",", 1)
+                    code_clean = normalize_code(code_part.strip())
+                    if code_clean is not None:
+                        choice_map[code_clean] = {"en": label_part.strip()}
+            if choice_map:
+                lists[var_name] = choice_map
+                data_col = column_lookup.get(var_name.casefold())
+                if data_col:
+                    explicit_variable_lists[data_col] = var_name
+
+    if code_header is None and choices_header is None:
         warnings.append(
             "Could not identify a code column. Recognized alternatives include "
             "name, code, and value; this codebook was saved for review but not applied."
         )
-    else:
+    elif code_header is not None:
         if group_header is None:
             list_name = "Codebook choices"
             warnings.append(
@@ -1212,6 +1343,34 @@ def parse_codebook(upload, data_frame):
         coded_columns.add(column)
         candidates[column] = matching_lists
 
+    # Map variables to Form Names (RedCap data dictionaries)
+    variable_forms = {}
+    if form_header is not None and variable_header is not None:
+        for _, row in codebook_frame.iterrows():
+            form_val = row[form_header]
+            if is_missing(form_val) or not str(form_val).strip():
+                continue
+            form_name = str(form_val).strip()
+
+            var_val = row[variable_header]
+            if not is_missing(var_val) and str(var_val).strip():
+                raw_var = str(var_val).strip()
+                variable_forms[raw_var] = form_name
+                slug_var = re.sub(r"[^a-z0-9]+", "_", raw_var.lower()).strip("_")
+                slug_var = re.sub(r"_+", "_", slug_var)
+                if slug_var:
+                    variable_forms[slug_var] = form_name
+
+            if field_label_header is not None:
+                label_val = row[field_label_header]
+                if not is_missing(label_val) and str(label_val).strip():
+                    raw_label = str(label_val).strip()
+                    variable_forms[raw_label] = form_name
+                    slug_label = re.sub(r"[^a-z0-9]+", "_", raw_label.lower()).strip("_")
+                    slug_label = re.sub(r"_+", "_", slug_label)
+                    if slug_label:
+                        variable_forms[slug_label] = form_name
+
     return {
         "lists": lists,
         "variable_lists": variable_lists,
@@ -1219,6 +1378,7 @@ def parse_codebook(upload, data_frame):
         "coded_columns": sorted(coded_columns),
         "warnings": list(dict.fromkeys(warnings)),
         "source_columns": source_columns,
+        "variable_forms": variable_forms,
     }
 
 
@@ -1264,6 +1424,67 @@ def extract_row_pids(frame, id_columns=None):
 
 
 
+def _build_date_chart_from_datetimes(column, date_values, row_pids, description=""):
+    """Build a date chart dict from an already-parsed datetime64 Series.
+
+    *date_values* must be a Series of Timestamps (no NaTs).
+    *row_pids* must be index-aligned with *date_values*.
+    Returns the same chart dict shape as the string-date path in _build_text_chart.
+    """
+    col_low = column.lower().replace(" ", "_").replace("-", "_")
+    is_dob_col = any(
+        kw in col_low
+        for kw in (
+            "dob",
+            "birth_date",
+            "date_of_birth",
+            "dateofbirth",
+            "birth_year",
+            "year_of_birth",
+        )
+    )
+    if is_dob_col:
+        year_series = date_values.dt.year.astype(str)
+        frequencies = year_series.value_counts().sort_index()
+        labels = frequencies.index.tolist()
+        pids_per_period = []
+        for yr in labels:
+            yr_indices = year_series[year_series == yr].index
+            pids_per_period.append(row_pids.loc[yr_indices].tolist())
+        summary_str = f"{len(date_values):,} birth records · {len(frequencies):,} birth years"
+    else:
+        periods = date_values.dt.to_period("M").astype(str)
+        frequencies = periods.value_counts().sort_index()
+        if len(frequencies) > 120:
+            frequencies = frequencies.tail(120)
+        labels = frequencies.index.tolist()
+        pids_per_period = []
+        for period in labels:
+            period_indices = periods[periods == period].index
+            pids_per_period.append(row_pids.loc[period_indices].tolist())
+        summary_str = (
+            f"{len(date_values):,} dated records · "
+            f"{len(frequencies):,} months"
+        )
+    return {
+        "name": column,
+        "description": description,
+        "kind": "date",
+        "variants": [
+            {
+                "type": "line",
+                "label": "Trend line",
+                "labels": labels,
+                "labels_en": labels,
+                "labels_ny": labels,
+                "values": [int(v) for v in frequencies.tolist()],
+                "pids": pids_per_period,
+            }
+        ],
+        "summary": summary_str,
+    }
+
+
 def _build_text_chart(column, values, row_pids, description=""):
     # --- Strip blank / sentinel values before any chart processing ---
     # This ensures chart counts reflect only records with real data,
@@ -1274,6 +1495,14 @@ def _build_text_chart(column, values, row_pids, description=""):
     row_pids = row_pids.loc[values.index] if hasattr(row_pids, "loc") else row_pids
     if values.empty:
         return None
+
+    # Fast path: column already holds datetime64 objects (e.g. from Excel)
+    if pd.api.types.is_datetime64_any_dtype(values):
+        date_values = values.dropna()
+        if not date_values.empty:
+            return _build_date_chart_from_datetimes(
+                column, date_values, row_pids.loc[date_values.index], description
+            )
 
     raw_values = values.astype(str)
     # Detect dates in both YYYY-MM-DD (ISO) and DD/MM/YYYY (European) formats
@@ -1297,60 +1526,9 @@ def _build_text_chart(column, values, row_pids, description=""):
         parsed_dates = pd.Series(dtype="datetime64[ns]")
     if looks_like_date and parsed_dates.notna().sum() >= len(raw_values) * 0.5:
         date_values = parsed_dates.dropna()
-        col_low = column.lower().replace(" ", "_").replace("-", "_")
-        is_dob_col = any(
-            kw in col_low
-            for kw in (
-                "dob",
-                "birth_date",
-                "date_of_birth",
-                "dateofbirth",
-                "birth_year",
-                "year_of_birth",
-            )
+        return _build_date_chart_from_datetimes(
+            column, date_values, row_pids.loc[date_values.index], description
         )
-        if is_dob_col:
-            # Group by birth YEAR — these are historic dates spread over decades
-            year_series = date_values.dt.year.astype(str)
-            frequencies = year_series.value_counts().sort_index()
-            labels = frequencies.index.tolist()
-            pids_per_period = []
-            for yr in labels:
-                yr_indices = year_series[year_series == yr].index
-                pids_per_period.append(row_pids.loc[yr_indices].tolist())
-            summary_str = f"{len(date_values):,} birth records · {len(frequencies):,} birth years"
-        else:
-            periods = date_values.dt.to_period("M").astype(str)
-            frequencies = periods.value_counts().sort_index()
-            if len(frequencies) > 120:
-                frequencies = frequencies.tail(120)
-            labels = frequencies.index.tolist()
-            pids_per_period = []
-            for period in labels:
-                period_indices = periods[periods == period].index
-                pids_per_period.append(row_pids.loc[period_indices].tolist())
-            summary_str = (
-                f"{len(date_values):,} dated records · "
-                f"{len(frequencies):,} months"
-            )
-
-        return {
-            "name": column,
-            "description": description,
-            "kind": "date",
-            "variants": [
-                {
-                    "type": "line",
-                    "label": "Trend line",
-                    "labels": labels,
-                    "labels_en": labels,
-                    "labels_ny": labels,
-                    "values": [int(value) for value in frequencies.tolist()],
-                    "pids": pids_per_period,
-                }
-            ],
-            "summary": summary_str,
-        }
 
     frequencies = raw_values.value_counts()
     pids_per_cat = []
@@ -1456,6 +1634,30 @@ def build_single_column_chart(
             ),
         }
     elif pd.api.types.is_numeric_dtype(values):
+        # --- Part B: Excel serial date interception ---
+        # If the column name hints at a date AND the values look like Excel
+        # serials (pre-existing data not caught by Part A upload-time coercion),
+        # convert and render as a date chart instead of numeric/histogram.
+        col_lower_b = column.lower().replace(" ", "_").replace("-", "_")
+        if any(kw in col_lower_b for kw in _EXCEL_SERIAL_DATE_HINTS):
+            if _looks_like_excel_serials(values):
+                nums = pd.to_numeric(values, errors="coerce").dropna()
+                in_range = nums.between(_EXCEL_SERIAL_MIN, _EXCEL_SERIAL_MAX)
+                if in_range.mean() >= 0.5:
+                    try:
+                        date_values = pd.to_datetime(
+                            nums[in_range], unit="D", origin="1899-12-30", errors="coerce"
+                        ).dropna()
+                        if not date_values.empty:
+                            return _build_date_chart_from_datetimes(
+                                column,
+                                date_values,
+                                row_pids.loc[date_values.index],
+                                description,
+                            )
+                    except Exception:
+                        pass  # fall through to normal numeric handling
+        # --- End serial interception ---
         numeric = pd.to_numeric(values, errors="coerce")
         non_numeric_count = int(numeric.isna().sum()) - int(values.isna().sum())
         numeric = numeric.dropna()
@@ -1538,6 +1740,24 @@ def build_single_column_chart(
         return _build_text_chart(column, values, row_pids, description)
 
 
+def _form_for_column(col, variable_forms):
+    if not variable_forms:
+        return None
+    # Exact match first
+    if col in variable_forms:
+        return variable_forms[col]
+    # Slug match (sanitize_headers_for_upload produces these)
+    slug = re.sub(r"[^a-z0-9]+", "_", str(col).lower()).strip("_")
+    slug = re.sub(r"_+", "_", slug)
+    if slug in variable_forms:
+        return variable_forms[slug]
+    # Fallback for multi-response variants (symptoms_gen___1 → symptoms_gen)
+    stripped = re.sub(r"(_{2,}\d+|_\d+)$", "", str(col))
+    if stripped in variable_forms:
+        return variable_forms[stripped]
+    return None
+
+
 def dashboard_data(dataset, codebook=None):
     codebook = codebook or {}
     has_codebook = bool(
@@ -1546,6 +1766,7 @@ def dashboard_data(dataset, codebook=None):
             codebook.get("variable_lists")
             or codebook.get("lists")
             or codebook.get("coded_columns")
+            or codebook.get("variable_forms")
         )
     )
     frame = pd.DataFrame(dataset.records, columns=dataset.column_names)
@@ -1722,15 +1943,27 @@ def dashboard_data(dataset, codebook=None):
                 chart["is_base_column"] = False
                 charts.append(chart)
 
+    variable_forms = codebook.get("variable_forms", {}) if codebook else {}
+    for chart in charts:
+        if not chart.get("form"):
+            form = _form_for_column(chart.get("name", ""), variable_forms)
+            if not form and chart.get("key"):
+                form = _form_for_column(chart.get("key", ""), variable_forms)
+            if not form and chart.get("group_columns"):
+                form = _form_for_column(chart["group_columns"][0], variable_forms)
+            if not form and chart.get("parent_group"):
+                form = _form_for_column(chart.get("parent_group", ""), variable_forms)
+            chart["form"] = form
+
     preview = [
         {key: (None if pd.isna(value) else value) for key, value in row.items()}
-        for row in dataset.records
+        for row in dataset.records[:PREVIEW_ROW_LIMIT]
     ]
     all_dataset_pids = row_pids.tolist()
     return charts, preview, all_dataset_pids
 
 
-def group_related_charts(charts):
+def group_related_charts(charts, chart_indices=None):
     list_counts = {}
     for chart in charts:
         if chart.get("is_subcolumn") or chart.get("is_base_column"):
@@ -1742,18 +1975,20 @@ def group_related_charts(charts):
     sections = []
     grouped_sections = {}
     subcharts_by_parent = {}
-    for index, chart in enumerate(charts):
+    for local_index, chart in enumerate(charts):
+        idx = chart_indices[local_index] if chart_indices is not None else local_index
         parent = chart.get("parent_group")
         if parent:
             subcharts_by_parent.setdefault(parent, []).append(
-                {"chart": chart, "index": index}
+                {"chart": chart, "index": idx}
             )
 
-    for index, chart in enumerate(charts):
+    for local_index, chart in enumerate(charts):
+        idx = chart_indices[local_index] if chart_indices is not None else local_index
         if chart.get("is_subcolumn") or chart.get("is_base_column"):
             continue
         list_name = chart.get("response_list")
-        child_entries = [{"chart": chart, "index": index}] + subcharts_by_parent.get(
+        child_entries = [{"chart": chart, "index": idx}] + subcharts_by_parent.get(
             chart["name"], []
         )
 
@@ -2138,8 +2373,11 @@ def upload():
             clean_mode = "pid"
 
         codebook_file = request.files.get("codebook")
+        dictionary_file = request.files.get("dictionary")
         codebook_data = None
         categorical_columns = set()
+        variables = None
+
         question_groups = group_question_columns(raw)
         preserve_missing_columns = {
             column
@@ -2154,12 +2392,54 @@ def upload():
             custom_selected = request.form.getlist("custom_columns")
             preserve_missing_columns.update(custom_selected)
 
+        # ---------- Parse reference files (codebook and/or dictionary) ----------
+        raw.columns = make_unique_headers(raw.columns)
+        codebook_parsed = None
+        dictionary_parsed = None
+
         if codebook_file is not None and codebook_file.filename:
-            raw.columns = make_unique_headers(raw.columns)
-            variables = parse_codebook(codebook_file, raw)
+            codebook_parsed = parse_codebook(codebook_file, raw)
+
+        if dictionary_file is not None and dictionary_file.filename:
+            dictionary_parsed = parse_codebook(dictionary_file, raw)
+
+        if codebook_parsed or dictionary_parsed:
+            # Merge precedence:
+            #   - labels (lists, variable_lists, coded_columns): CODEBOOK wins
+            #   - forms  (variable_forms):                        DICTIONARY wins
+            # Apply dictionary first, then codebook, so codebook overwrites labels.
+            merged = {
+                "lists": {},
+                "variable_lists": {},
+                "candidates": {},
+                "coded_columns": set(),
+                "warnings": [],
+                "source_columns": [],
+                "variable_forms": {},
+            }
+            for parsed in (dictionary_parsed, codebook_parsed):
+                if not parsed:
+                    continue
+                merged["lists"].update(parsed.get("lists", {}))
+                merged["variable_lists"].update(parsed.get("variable_lists", {}))
+                merged["candidates"].update(parsed.get("candidates", {}))
+                merged["coded_columns"].update(parsed.get("coded_columns", []))
+                merged["warnings"].extend(parsed.get("warnings", []))
+                merged["source_columns"].extend(parsed.get("source_columns", []))
+                merged["variable_forms"].update(parsed.get("variable_forms", {}))
+
+            # Explicit form precedence: dictionary overrides codebook for forms.
+            if dictionary_parsed:
+                merged["variable_forms"].update(
+                    dictionary_parsed.get("variable_forms", {})
+                )
+
+            merged["coded_columns"] = sorted(merged["coded_columns"])
+            merged["warnings"] = list(dict.fromkeys(merged["warnings"]))
+            variables = merged
             categorical_columns = set(variables["coded_columns"])
 
-        # Detect the primary PID column so per-participant ffill can be applied
+        # ---------- Detect primary PID column for ffill (disabled but kept) ----------
         _pid_cols = detect_pid_columns(raw.columns)
         _primary_pid = None
         if clean_mode == "first_three" and len(raw.columns) >= 3:
@@ -2169,16 +2449,19 @@ def upload():
             if custom_selected:
                 _primary_pid = custom_selected[0]
         if not _primary_pid:
-            _primary_pid = _pid_cols[0] if _pid_cols else (raw.columns[0] if len(raw.columns) > 0 else None)
+            _primary_pid = _pid_cols[0] if _pid_cols else (
+                raw.columns[0] if len(raw.columns) > 0 else None
+            )
 
-        cleaned, duplicates, missing, records = clean_dataframe(
+        cleaned, duplicates, missing, missing_retained, records = clean_dataframe(
             raw,
             categorical_columns,
             preserve_missing_columns=preserve_missing_columns,
             pid_column=_primary_pid,
         )
 
-        if codebook_file is not None and codebook_file.filename:
+        # ---------- Trim reference data to columns that survived cleaning ----------
+        if variables is not None:
             variables["coded_columns"] = [
                 name for name in variables["coded_columns"] if name in cleaned.columns
             ]
@@ -2192,14 +2475,27 @@ def upload():
                 for name, list_names in variables["candidates"].items()
                 if name in cleaned.columns
             }
+            variables["variable_forms"] = {
+                name: form
+                for name, form in variables["variable_forms"].items()
+                if name in cleaned.columns
+            }
+
             unresolved = sorted(
                 set(variables["candidates"]).difference(
                     variables["variable_lists"]
                 ),
                 key=str.casefold,
             )
+
+            # Store under whichever filename was uploaded (for the report).
+            if codebook_file is not None and codebook_file.filename:
+                ref_filename = os.path.basename(codebook_file.filename)
+            else:
+                ref_filename = os.path.basename(dictionary_file.filename)
+
             codebook_data = StudyCodebook(
-                filename=os.path.basename(codebook_file.filename),
+                filename=ref_filename,
                 variables=variables,
                 unmatched_variables=unresolved,
             )
@@ -2215,11 +2511,6 @@ def upload():
     ) as error:
         flash(str(error), "error")
         return redirect(url_for("index"))
-
-    if cleaned.empty or len(cleaned.columns) == 0:
-        flash("The uploaded file has no usable rows or columns.", "error")
-        return redirect(url_for("index"))
-
 
     if cleaned.empty or len(cleaned.columns) == 0:
         flash("The uploaded file has no usable rows or columns.", "error")
@@ -2250,7 +2541,7 @@ def upload():
         rows=len(cleaned),
         columns=len(cleaned.columns),
         duplicates_removed=duplicates,
-        missing_values_filled=missing,
+        missing_values_filled=missing_retained,
         column_names=list(cleaned.columns),
         records=records,
         expected_participants=expected_participants,
@@ -2262,7 +2553,6 @@ def upload():
     try:
         db.session.flush()
 
-        # Automatically create a persistent study storage folder
         safe_study_title = (
             re.sub(r"[^\w\-]+", "_", study_name).strip("_") or f"study_{dataset.id}"
         )
@@ -2291,6 +2581,14 @@ def upload():
                 )
                 with open(cb_copy_path, "wb") as cb_out:
                     cb_out.write(codebook_file.read())
+            if dictionary_file is not None and dictionary_file.filename:
+                dictionary_file.seek(0)
+                dict_copy_path = os.path.join(
+                    storage_dir,
+                    f"dictionary_{os.path.basename(dictionary_file.filename)}",
+                )
+                with open(dict_copy_path, "wb") as d_out:
+                    d_out.write(dictionary_file.read())
         except Exception:
             app.logger.warning(
                 "Could not auto-populate storage folder %s", storage_dir
@@ -2328,24 +2626,138 @@ def upload():
     flash("Your study file was cleaned and its dashboard is ready.", "success")
     return redirect(url_for("dashboard", dataset_id=dataset.id, new_upload="1"))
 
+def _invalidate_charts_cache(dataset):
+    if dataset is not None:
+        dataset.charts_cache = None
+
+
+@app.route("/studies/<int:dataset_id>/clear-cache", methods=["POST"])
+def clear_charts_cache(dataset_id):
+    dataset = db.session.get(StudyDataset, dataset_id)
+    if dataset is None:
+        abort(404)
+    dataset.charts_cache = None
+    try:
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        app.logger.exception("Could not clear charts cache")
+        flash("Could not clear the chart cache. Please try again.", "error")
+        return redirect(url_for("dashboard", dataset_id=dataset.id))
+    flash("Chart cache cleared. Next page load will rebuild charts.", "success")
+    return redirect(url_for("dashboard", dataset_id=dataset.id))
+
 
 @app.route("/studies/<int:dataset_id>")
 def dashboard(dataset_id):
+    """Render the study dashboard.
+
+    Performance note:
+    Dashboard data (charts, preview, form sections, grouped sections, duplicate
+    groups, and PID scans) are cached in dataset.charts_cache. On cache hit,
+    all chart computation is bypassed, reducing load time from 30+ seconds to <1s.
+    The cache is automatically invalidated when dataset.records or codebook.variables change.
+    """
+    t_start = time.time()
     dataset = db.session.get(StudyDataset, dataset_id)
     if dataset is None:
         abort(404)
     codebook = db.session.get(StudyCodebook, dataset.id)
     codebook_data = codebook.variables if codebook else None
-    charts, preview, all_dataset_pids = dashboard_data(dataset, codebook_data)
-    if not charts:
-        app.logger.warning(
-            "Dataset %s produced no charts. columns=%s dtypes=%s",
-            dataset.id,
-            dataset.column_names[:10],
-            {c: type(dataset.records[0].get(c)).__name__ for c in dataset.column_names[:10]}
-            if dataset.records else {},
+
+    cache = dataset.charts_cache
+    cache_valid = False
+    current_cb_hash = None
+    current_headers_hash = None
+    if cache and cache.get("_schema_version") == _SCHEMA_VERSION:
+        current_cb_hash = (
+            hashlib.md5(json.dumps(codebook_data, sort_keys=True, default=str).encode()).hexdigest()
+            if codebook_data else None
         )
-    chart_sections = group_related_charts(charts)
+        current_headers_hash = (
+            hashlib.md5(json.dumps(dataset.original_headers, sort_keys=True, default=str).encode()).hexdigest()
+            if dataset.original_headers else None
+        )
+        cache_valid = (
+            cache.get("_records_len") == len(dataset.records)
+            and cache.get("_codebook_hash") == current_cb_hash
+            and cache.get("_original_headers_hash") == current_headers_hash
+        )
+
+    if cache_valid:
+        charts = cache.get("charts", [])
+        preview = cache.get("preview", [])
+        all_dataset_pids = cache.get("all_dataset_pids", [])
+        form_sections = cache.get("form_sections") or OrderedDict()
+        chart_sections = cache.get("chart_sections", [])
+        identical_pid_groups = cache.get("identical_pid_groups", [])
+        differing_pid_groups = cache.get("differing_pid_groups", [])
+        missing_pid_rows = cache.get("missing_pid_rows", [])
+        all_pid_rows = cache.get("all_pid_rows", [])
+        pid_sequence_gaps = cache.get("pid_sequence_gaps", [])
+        pid_sequence_gap_count = cache.get("pid_sequence_gap_count", 0)
+        unique_participant_count = cache.get("unique_participant_count")
+        unique_participant_pids = cache.get("unique_participant_pids")
+    else:
+        t0 = time.time()
+        charts, preview, all_dataset_pids = dashboard_data(dataset, codebook_data)
+        app.logger.info("dashboard_data for dataset %s: %.2fs", dataset.id, time.time() - t0)
+
+        if not charts:
+            app.logger.warning(
+                "Dataset %s produced no charts. columns=%s dtypes=%s",
+                dataset.id,
+                dataset.column_names[:10],
+                {c: type(dataset.records[0].get(c)).__name__ for c in dataset.column_names[:10]}
+                if dataset.records else {},
+            )
+
+        t0 = time.time()
+        chart_sections = group_related_charts(charts)
+        app.logger.info("group_related_charts for dataset %s: %.2fs", dataset.id, time.time() - t0)
+
+        t0 = time.time()
+        # Build form_sections if a data dictionary with Form Names was uploaded
+        variable_forms = (codebook_data or {}).get("variable_forms", {})
+        form_order = []
+        seen_forms = set()
+        for form in variable_forms.values():
+            if form and form not in seen_forms:
+                seen_forms.add(form)
+                form_order.append(form)
+
+        charts_with_form = [c for c in charts if c.get("form")]
+        form_sections = OrderedDict()
+        if charts_with_form:
+            def pretty(form):
+                return form.replace("_", " ").title() if form else "Other"
+
+            grouped_forms = OrderedDict()
+            for form in form_order:
+                grouped_forms[form] = []
+            for chart in charts_with_form:
+                grouped_forms.setdefault(chart["form"], []).append(chart)
+
+            chart_to_global_idx = {id(c): i for i, c in enumerate(charts)}
+
+            for form, form_charts in grouped_forms.items():
+                if not form_charts:
+                    continue
+                pretty_title = pretty(form)
+                final_title = pretty_title
+                n = 2
+                while final_title in form_sections:
+                    final_title = f"{pretty_title} ({n})"
+                    n += 1
+                indices = [chart_to_global_idx[id(c)] for c in form_charts]
+                form_sections[final_title] = {
+                    "raw_form": form,
+                    "charts": group_related_charts(form_charts, chart_indices=indices),
+                }
+        app.logger.info("form_sections for dataset %s: %.2fs", dataset.id, time.time() - t0)
+
+    has_form_map = bool(form_sections)
+
     id_columns = get_dataset_id_columns(dataset)
     pid_candidates = detect_pid_columns(dataset.column_names)
     pid_selection = db.session.get(StudyPidSelection, dataset.id)
@@ -2354,41 +2766,126 @@ def dashboard(dataset_id):
         pid_column = pid_candidates[0] if len(pid_candidates) == 1 else None
     if not id_columns and pid_column:
         id_columns = [pid_column]
-    identical_pid_groups, differing_pid_groups = (
-        find_pid_duplicate_groups(dataset, id_columns)
-        if id_columns
-        else ([], [])
-    )
-    missing_pid_rows = [
-        {"index": index, "record": record}
-        for index, record in enumerate(dataset.records)
-        if pid_candidates
-        and all(
-            is_missing(record.get(column))
-            or not str(record.get(column, "")).strip()
-            for column in pid_candidates
+
+    if not cache_valid:
+        t0 = time.time()
+        # Option A: Cache duplicate review and PID sequence scans alongside chart data
+        # (Option B: Lazy loading behind /studies/<id>/duplicates endpoint can be added in future)
+        identical_pid_groups, differing_pid_groups = (
+            find_pid_duplicate_groups(dataset, id_columns)
+            if id_columns
+            else ([], [])
         )
-    ]
-    enriched_rows = []
-    for index, record in enumerate(dataset.records):
-        row_pids = []
-        for col in pid_candidates:
-            val = record.get(col)
-            if val is not None and str(val).strip() and str(val).strip().lower() != "nan":
-                row_pids.append(str(val).strip())
-        enriched_rows.append(
-            {
-                "index": index,
-                "record": record,
-                "pids": row_pids,
-                "primary_pid": row_pids[0] if row_pids else f"Row {index + 1}",
-            }
+        missing_pid_rows = [
+            {"index": index, "record": record}
+            for index, record in enumerate(dataset.records)
+            if pid_candidates
+            and all(
+                is_missing(record.get(column))
+                or not str(record.get(column, "")).strip()
+                for column in pid_candidates
+            )
+        ]
+        enriched_rows = []
+        for index, record in enumerate(dataset.records):
+            row_pids = []
+            for col in pid_candidates:
+                val = record.get(col)
+                if val is not None and str(val).strip() and str(val).strip().lower() != "nan":
+                    row_pids.append(str(val).strip())
+            enriched_rows.append(
+                {
+                    "index": index,
+                    "record": record,
+                    "pids": row_pids,
+                    "primary_pid": row_pids[0] if row_pids else f"Row {index + 1}",
+                }
+            )
+        all_pid_rows = sort_pid_rows(enriched_rows, pid_candidates)
+        pid_sequence_gaps = find_pid_sequence_gaps(dataset.records, pid_candidates)
+        pid_sequence_gap_count = sum(
+            len(group["missing_ids"]) for group in pid_sequence_gaps
         )
-    all_pid_rows = sort_pid_rows(enriched_rows, pid_candidates)
-    pid_sequence_gaps = find_pid_sequence_gaps(dataset.records, pid_candidates)
-    pid_sequence_gap_count = sum(
-        len(group["missing_ids"]) for group in pid_sequence_gaps
-    )
+
+        # --- Unique participants: deduplicate PID values across repeat rows ---
+        _seen_pids = set()
+        _unique_participant_pids = []
+        for rec in dataset.records:
+            pid_val = None
+            for c in pid_candidates:
+                val = rec.get(c)
+                if val is not None and str(val).strip() and str(val).strip().lower() not in ("nan", "none", ""):
+                    pid_val = str(val).strip()
+                    break
+            if pid_val and pid_val not in _seen_pids:
+                _seen_pids.add(pid_val)
+                _unique_participant_pids.append(pid_val)
+
+        def _natural_key(s):
+            return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
+
+        _unique_participant_pids.sort(key=_natural_key)
+        unique_participant_count = len(_unique_participant_pids)
+        unique_participant_pids = _unique_participant_pids
+        app.logger.info("duplicates and pid scans for dataset %s: %.2fs", dataset.id, time.time() - t0)
+
+        # Write to cache
+        if current_cb_hash is None:
+            current_cb_hash = (
+                hashlib.md5(json.dumps(codebook_data, sort_keys=True, default=str).encode()).hexdigest()
+                if codebook_data else None
+            )
+        if current_headers_hash is None:
+            current_headers_hash = (
+                hashlib.md5(json.dumps(dataset.original_headers, sort_keys=True, default=str).encode()).hexdigest()
+                if dataset.original_headers else None
+            )
+        dataset.charts_cache = {
+            "charts": charts,
+            "preview": preview,
+            "all_dataset_pids": all_dataset_pids,
+            "form_sections": form_sections,
+            "chart_sections": chart_sections,
+            "identical_pid_groups": identical_pid_groups,
+            "differing_pid_groups": differing_pid_groups,
+            "missing_pid_rows": missing_pid_rows,
+            "all_pid_rows": all_pid_rows,
+            "pid_sequence_gaps": pid_sequence_gaps,
+            "pid_sequence_gap_count": pid_sequence_gap_count,
+            "unique_participant_count": unique_participant_count,
+            "unique_participant_pids": unique_participant_pids,
+            "_schema_version": _SCHEMA_VERSION,
+            "_records_len": len(dataset.records),
+            "_codebook_hash": current_cb_hash,
+            "_original_headers_hash": current_headers_hash,
+            "_cached_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            db.session.commit()
+        except SQLAlchemyError:
+            db.session.rollback()
+            app.logger.exception("Could not write charts cache")
+    elif unique_participant_count is None:
+        _seen_pids = set()
+        _unique_participant_pids = []
+        for rec in dataset.records:
+            pid_val = None
+            for c in pid_candidates:
+                val = rec.get(c)
+                if val is not None and str(val).strip() and str(val).strip().lower() not in ("nan", "none", ""):
+                    pid_val = str(val).strip()
+                    break
+            if pid_val and pid_val not in _seen_pids:
+                _seen_pids.add(pid_val)
+                _unique_participant_pids.append(pid_val)
+
+        def _natural_key(s):
+            return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
+
+        _unique_participant_pids.sort(key=_natural_key)
+        unique_participant_count = len(_unique_participant_pids)
+        unique_participant_pids = _unique_participant_pids
+
     question_groups = group_question_columns(dataset.column_names)
     subcolumn_to_group = {}
     grouped_categories = {}
@@ -2419,29 +2916,6 @@ def dashboard(dataset_id):
         1 for chart in charts if not chart.get("is_grouped")
     )
 
-    # --- Unique participants: deduplicate PID values across repeat rows ---
-    # Collects one entry per distinct PID value, ignoring "Row N" fallbacks.
-    _seen_pids = set()
-    _unique_participant_pids = []
-    for rec in dataset.records:
-        pid_val = None
-        for c in pid_candidates:
-            val = rec.get(c)
-            if val is not None and str(val).strip() and str(val).strip().lower() not in ("nan", "none", ""):
-                pid_val = str(val).strip()
-                break
-        if pid_val and pid_val not in _seen_pids:
-            _seen_pids.add(pid_val)
-            _unique_participant_pids.append(pid_val)
-
-    # Natural sort so BCC-002 comes before BCC-010
-    def _natural_key(s):
-        return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
-
-    _unique_participant_pids.sort(key=_natural_key)
-    unique_participant_count = len(_unique_participant_pids)
-    unique_participant_pids = _unique_participant_pids
-
     observed_pids_set = set()
     for rec in dataset.records:
         for c in pid_candidates:
@@ -2456,6 +2930,13 @@ def dashboard(dataset_id):
 
     lilongwe_tracking = compile_tracking_summary(lilongwe_records, observed_pids_set)
     salima_tracking = compile_tracking_summary(salima_records, observed_pids_set)
+
+    app.logger.info(
+        "dashboard %s: %s (%.2fs)",
+        dataset_id,
+        "cache hit" if cache_valid else "cache miss",
+        time.time() - t_start,
+    )
 
     return render_template(
         "dashboard.html",
@@ -2485,6 +2966,8 @@ def dashboard(dataset_id):
         all_dataset_pids=all_dataset_pids,
         unique_participant_count=unique_participant_count,
         unique_participant_pids=unique_participant_pids,
+        form_sections=form_sections,
+        has_form_map=has_form_map,
     )
 
 
@@ -2513,6 +2996,7 @@ def save_pid_selection(dataset_id):
         selection = StudyPidSelection(dataset_id=dataset.id)
         db.session.add(selection)
     selection.pid_column = pid_column
+    _invalidate_charts_cache(dataset)
     try:
         db.session.commit()
     except SQLAlchemyError:
@@ -2556,6 +3040,7 @@ def edit_duplicate_row(dataset_id):
         return redirect(url_for("dashboard", dataset_id=dataset.id) + "#duplicate-review")
     records[row_index] = record
     dataset.records = records
+    _invalidate_charts_cache(dataset)
     try:
         db.session.commit()
     except SQLAlchemyError:
@@ -2585,6 +3070,7 @@ def drop_duplicate_row(dataset_id):
     records.pop(row_index)
     dataset.records = records
     dataset.rows = len(records)
+    _invalidate_charts_cache(dataset)
     try:
         db.session.commit()
     except SQLAlchemyError:
@@ -2630,6 +3116,7 @@ def save_codebook_mapping(dataset_id):
         set(variables.get("candidates", {})).difference(variable_lists),
         key=str.casefold,
     )
+    _invalidate_charts_cache(dataset)
     try:
         db.session.commit()
     except SQLAlchemyError:
@@ -3097,6 +3584,8 @@ with app.app_context():
                 conn.execute(text("ALTER TABLE study_dataset ADD COLUMN clean_mode VARCHAR(50)"))
             if "original_headers" not in existing_cols:
                 conn.execute(text("ALTER TABLE study_dataset ADD COLUMN original_headers JSON"))
+            if "charts_cache" not in existing_cols:
+                conn.execute(text("ALTER TABLE study_dataset ADD COLUMN charts_cache JSON"))
             conn.commit()
     except Exception as e:
         app.logger.warning("Auto-migration note: %s", e)

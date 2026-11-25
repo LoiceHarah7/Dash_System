@@ -90,11 +90,20 @@
         {% if codebook %} · Codebook: {{ codebook.filename }}{% endif %}
         {% if saved_path %} · <span class="saved-path-chip" title="{{ saved_path }}">📂 {{ saved_path | truncate(50, True, '…') }}</span>{% endif %}
       </p>
+      {% if dataset.charts_cache and dataset.charts_cache.get('_cached_at') %}
+      <p class="muted small">Charts served from cache (built {{ dataset.charts_cache['_cached_at'][:19].replace('T', ' ') }}).</p>
+      {% endif %}
     </div>
     <div class="download-cluster" role="group" aria-label="Download options">
       <a class="button report-button download-all-btn" href="{{ url_for('download_report', dataset_id=dataset.id) }}" title="Download all 3 sheets in one workbook (Cleaning Report, Cleaned Data, Codebook)"><span>↓</span> Download All (3 Sheets)</a>
       <a class="button download-sub-button" href="{{ url_for('download_cleaned_data', dataset_id=dataset.id) }}" title="Download cleaned dataset only"><span>▤</span> Cleaned Data</a>
       <a class="button download-sub-button" href="{{ url_for('download_cleaning_report_only', dataset_id=dataset.id) }}" title="Download cleaning report summary only"><span>⌗</span> Report Only</a>
+      <form method="post"
+            action="{{ url_for('clear_charts_cache', dataset_id=dataset.id) }}"
+            onsubmit="return confirm('Clearing the chart cache will force the dashboard to rebuild every chart from the raw dataset on the next page load.\n\nThis can take 1–2 minutes for large studies. The dataset itself is not modified, and no data is lost.\n\nDo you want to continue?');"
+            style="display:inline">
+        <button type="submit" class="button small" title="Force rebuild on next load">Clear chart cache</button>
+      </form>
     </div>
   </section>
 
@@ -692,6 +701,31 @@
   <section class="charts-section">
     <div class="section-heading"><div><p class="eyebrow">AUTOMATIC ANALYSIS</p><h2>Explore your data</h2></div><span class="muted" id="charts-header-count">{{ grouped_chart_count }} categories · one recommended chart per question</span></div>
     {% if charts %}
+      <div class="category-dimension-control" role="radiogroup" aria-label="Category grouping">
+        <button type="button"
+                class="dimension-btn{% if has_form_map %} active{% endif %}"
+                data-category-dimension="crfs"
+                role="radio"
+                aria-checked="{{ 'true' if has_form_map else 'false' }}"
+                {% if not has_form_map %}disabled title="Upload a data dictionary to enable CRFs view"{% endif %}>
+          CRFs
+        </button>
+        <button type="button"
+                class="dimension-btn{% if not has_form_map %} active{% endif %}"
+                data-category-dimension="columns"
+                role="radio"
+                aria-checked="{{ 'false' if has_form_map else 'true' }}">
+          Columns
+        </button>
+        <button type="button"
+                class="dimension-btn"
+                data-category-dimension="visits"
+                role="radio"
+                aria-checked="false">
+          Visits
+        </button>
+      </div>
+
       <div class="chart-view-mode-bar">
         <div class="view-mode-selector" role="radiogroup" aria-label="Chart grouping mode">
           <button type="button" class="button view-mode-btn active" data-chart-mode="grouped" aria-checked="true">
@@ -709,10 +743,30 @@
       <div class="chart-search">
         <label for="chart-search-input">Find a question or field</label>
         <input id="chart-search-input" type="search" placeholder="Search graphs by name…" autocomplete="off">
-        <label class="chart-search-select-label" for="chart-field-select">Choose field</label>
-        <select id="chart-field-select" aria-label="Choose a field to view">
+
+        {# Choose field (Columns mode) #}
+        <label class="chart-search-select-label" id="chart-field-select-label" for="chart-field-select"{% if has_form_map %} hidden{% endif %}>Choose field</label>
+        <select id="chart-field-select" aria-label="Choose a field to view"{% if has_form_map %} hidden{% endif %}>
           <option value="">All fields</option>
         </select>
+
+        {# Choose form (CRFs mode) #}
+        <label class="chart-search-select-label" id="chart-form-select-label" for="chart-form-select"{% if not has_form_map %} hidden{% endif %}>Choose form</label>
+        <select id="chart-form-select" aria-label="Choose a form to view"{% if not has_form_map %} hidden{% endif %}>
+          <option value="">All forms</option>
+          {% if has_form_map %}
+            {% for form_title, form_info in form_sections.items() %}
+              <option value="{{ form_info.raw_form }}">{{ form_title }}</option>
+            {% endfor %}
+          {% endif %}
+        </select>
+
+        {# Choose visit (Visits mode - placeholder) #}
+        <label class="chart-search-select-label" id="chart-visit-select-label" for="chart-visit-select" hidden>Choose visit</label>
+        <select id="chart-visit-select" aria-label="Choose a visit to view" hidden>
+          <option value="">All visits</option>
+        </select>
+
         <span id="chart-search-results" class="muted" aria-live="polite">{{ grouped_chart_count }} graphs</span>
       </div>
     {% endif %}
@@ -762,22 +816,58 @@
       <script id="chart-data" type="application/json">{{ charts|tojson }}</script>
       <script id="label-map-data" type="application/json">{{ label_maps|tojson }}</script>
       <script id="all-pids-data" type="application/json">{{ all_dataset_pids|tojson }}</script>
-      <div class="chart-grid">
-        {% for section in chart_sections %}
-          {% if section.related %}
-            <details class="related-chart-group">
-              <summary class="related-chart-toggle">
-                <span>{{ section.title }}</span>
-                <span class="related-chart-count">{{ section.charts|length }} related fields</span>
-              </summary>
-              <div class="chart-grid related-chart-grid">
+      <!-- Existing columns view (unchanged content, wrapped in a section) -->
+      <div id="columns-view"{% if has_form_map %} hidden{% endif %}>
+        <div class="chart-grid">
+          {% for section in chart_sections %}
+            {% if section.related %}
+              <details class="related-chart-group">
+                <summary class="related-chart-toggle">
+                  <span>{{ section.title }}</span>
+                  <span class="related-chart-count">{{ section.charts|length }} related fields</span>
+                </summary>
+                <div class="chart-grid related-chart-grid">
+                  {% for entry in section.charts %}{{ render_chart(entry) }}{% endfor %}
+                </div>
+              </details>
+            {% else %}
+              {% for entry in section.charts %}{{ render_chart(entry) }}{% endfor %}
+            {% endif %}
+          {% endfor %}
+        </div>
+      </div>
+
+      <!-- New CRFs view -->
+      {% if has_form_map %}
+      <div id="crfs-view">
+        {% for form_title, form_info in form_sections.items() %}
+        <section class="form-section" data-form-raw="{{ form_info.raw_form }}">
+          <h2 class="form-title">{{ form_title }}</h2>
+          <div class="chart-grid">
+            {% for section in form_info.charts %}
+              {% if section.related %}
+                <details class="related-chart-group">
+                  <summary class="related-chart-toggle">
+                    <span>{{ section.title }}</span>
+                    <span class="related-chart-count">{{ section.charts|length }} related fields</span>
+                  </summary>
+                  <div class="chart-grid related-chart-grid">
+                    {% for entry in section.charts %}{{ render_chart(entry) }}{% endfor %}
+                  </div>
+                </details>
+              {% else %}
                 {% for entry in section.charts %}{{ render_chart(entry) }}{% endfor %}
-              </div>
-            </details>
-          {% else %}
-            {% for entry in section.charts %}{{ render_chart(entry) }}{% endfor %}
-          {% endif %}
+              {% endif %}
+            {% endfor %}
+          </div>
+        </section>
         {% endfor %}
+      </div>
+      {% endif %}
+
+      <!-- Visits placeholder -->
+      <div id="visits-view" hidden>
+        <p class="empty-state">Visits view coming soon.</p>
       </div>
       <script src="{{ url_for('static', filename='charts.js') }}" defer></script>
     {% else %}
