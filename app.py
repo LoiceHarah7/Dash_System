@@ -3962,6 +3962,8 @@ def reveal_study_path(dataset_id):
 @app.route("/studies/<int:dataset_id>/hidden-columns", methods=["POST"])
 def update_hidden_columns(dataset_id):
     """Lock or unlock one or more columns on a study dashboard (password-protected)."""
+    from sqlalchemy.orm.attributes import flag_modified
+
     dataset = db.session.get(StudyDataset, dataset_id)
     if dataset is None:
         abort(404)
@@ -3989,12 +3991,17 @@ def update_hidden_columns(dataset_id):
     else:
         return jsonify({"ok": False, "error": "Missing column or hidden_columns."}), 400
 
-    dataset.hidden_columns = new_hidden
+    # Assign a fresh list and explicitly flag the JSON column as modified.
+    # Without flag_modified(), SQLAlchemy may not detect a JSON mutation and
+    # will silently skip the UPDATE, causing the next read to return stale data.
+    dataset.hidden_columns = list(new_hidden)
+    flag_modified(dataset, "hidden_columns")
     try:
         db.session.commit()
-    except SQLAlchemyError:
+    except SQLAlchemyError as exc:
         db.session.rollback()
-        return jsonify({"ok": False, "error": "Could not save locked columns."}), 500
+        app.logger.exception("Could not save hidden columns for dataset %s", dataset_id)
+        return jsonify({"ok": False, "error": "Could not save locked columns: " + str(exc)}), 500
     return jsonify({"ok": True, "hidden_columns": new_hidden})
 
 
