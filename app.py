@@ -36,6 +36,8 @@ elif database_url.startswith("postgresql://"):
     database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
 app.config["SQLALCHEMY_DATABASE_URI"] = database_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+if database_url.startswith("sqlite"):
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"connect_args": {"timeout": 15}}
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 
 db = SQLAlchemy(app)
@@ -3962,18 +3964,25 @@ def reveal_study_path(dataset_id):
 @app.route("/studies/<int:dataset_id>/hidden-columns", methods=["POST"])
 def update_hidden_columns(dataset_id):
     """Lock or unlock one or more columns on a study dashboard (password-protected)."""
-    from sqlalchemy.orm.attributes import flag_modified
+    from sqlalchemy import text
 
-    dataset = db.session.get(StudyDataset, dataset_id)
-    if dataset is None:
-        abort(404)
     payload = request.get_json(silent=True) or {}
     password = payload.get("password", "")
     if not verify_admin_password(password):
         return jsonify({"ok": False, "error": "Incorrect password."}), 403
 
-    valid_cols = set(dataset.column_names or [])
-    current_hidden = list(dataset.hidden_columns or [])
+    # Query only column_names and hidden_columns via raw SQL so we don't load
+    # the full StudyDataset ORM row (which includes massive records/charts_cache JSON).
+    row = db.session.execute(
+        text("SELECT column_names, hidden_columns FROM study_dataset WHERE id = :id"),
+        {"id": dataset_id},
+    ).fetchone()
+    if row is None:
+        abort(404)
+
+    column_names = json.loads(row[0]) if isinstance(row[0], str) else (row[0] or [])
+    current_hidden = json.loads(row[1]) if isinstance(row[1], str) else (row[1] or [])
+    valid_cols = set(column_names)
 
     if "hidden_columns" in payload and isinstance(payload["hidden_columns"], list):
         new_hidden = [c for c in payload["hidden_columns"] if c in valid_cols]
@@ -3987,16 +3996,15 @@ def update_hidden_columns(dataset_id):
             hidden_set.add(col)
         else:
             hidden_set.discard(col)
-        new_hidden = [c for c in (dataset.column_names or []) if c in hidden_set]
+        new_hidden = [c for c in column_names if c in hidden_set]
     else:
         return jsonify({"ok": False, "error": "Missing column or hidden_columns."}), 400
 
-    # Assign a fresh list and explicitly flag the JSON column as modified.
-    # Without flag_modified(), SQLAlchemy may not detect a JSON mutation and
-    # will silently skip the UPDATE, causing the next read to return stale data.
-    dataset.hidden_columns = list(new_hidden)
-    flag_modified(dataset, "hidden_columns")
     try:
+        db.session.execute(
+            text("UPDATE study_dataset SET hidden_columns = :v WHERE id = :id"),
+            {"v": json.dumps(new_hidden), "id": dataset_id},
+        )
         db.session.commit()
     except SQLAlchemyError as exc:
         db.session.rollback()
