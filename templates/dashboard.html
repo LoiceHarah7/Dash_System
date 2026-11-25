@@ -233,6 +233,9 @@
       View potential missing PID numbers ({{ "{:,}".format(pid_sequence_gap_count) }})
     </button>
   {% endif %}
+  <button class="button pid-rows-toggle hide-columns-toggle" id="hide-columns-toggle" type="button" title="Lock or unlock columns displayed in the dashboard (password required)">
+    🔒 Hide/Unhide Columns{% if hidden_columns %} ({{ hidden_columns|length }} locked){% endif %}
+  </button>
   <a class="button pid-rows-toggle tracking-nav-jump" href="#tracking-section" id="tracking-nav-jump">
     <span>📋</span> Participant Procedure Tracking (Lilongwe &amp; Salima)
   </a>
@@ -269,13 +272,13 @@
             ⊞ Grouped columns (Default)
           </button>
           <button type="button" class="button table-mode-btn" data-table-mode="all" aria-pressed="false">
-            ☰ Show all columns ({{ dataset.column_names|length }})
+            ☰ Show all columns ({{ (visible_columns or dataset.column_names)|length }})
           </button>
         </div>
       </div>
-      <div class="table-wrap view-grouped"><table><thead><tr><th>Row</th>{% for column in dataset.column_names %}{% set is_sub = column in subcolumn_to_group %}<th class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}" data-column="{{ column }}">{{ column }}{% if column in grouped_categories %} <span class="col-group-indicator">Grouped</span>{% endif %}</th>{% endfor %}</tr></thead><tbody>
+      <div class="table-wrap view-grouped"><table><thead><tr><th>Row</th>{% for column in (visible_columns or dataset.column_names) %}{% set is_sub = column in subcolumn_to_group %}<th class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}" data-column="{{ column }}">{{ column }}{% if column in grouped_categories %} <span class="col-group-indicator">Grouped</span>{% endif %}</th>{% endfor %}</tr></thead><tbody>
         {% for entry in missing_pid_rows %}
-          <tr><td>{{ entry.index + 1 }}</td>{% for column in dataset.column_names %}{% set is_sub = column in subcolumn_to_group %}<td class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}"{% if column in label_maps %} data-label-column="{{ column }}" data-raw-value="{{ entry.record.get(column) }}"{% endif %}>{{ entry.record.get(column) if entry.record.get(column) is not none else "—" }}</td>{% endfor %}</tr>
+          <tr><td>{{ entry.index + 1 }}</td>{% for column in (visible_columns or dataset.column_names) %}{% set is_sub = column in subcolumn_to_group %}<td class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}"{% if column in label_maps %} data-label-column="{{ column }}" data-raw-value="{{ entry.record.get(column) }}"{% endif %}>{{ entry.record.get(column) if entry.record.get(column) is not none else "—" }}</td>{% endfor %}</tr>
         {% endfor %}
       </tbody></table></div>
     {% else %}
@@ -295,17 +298,17 @@
             ⊞ Grouped columns (Default)
           </button>
           <button type="button" class="button table-mode-btn" data-table-mode="all" aria-pressed="false">
-            ☰ Show all columns ({{ dataset.column_names|length }})
+            ☰ Show all columns ({{ (visible_columns or dataset.column_names)|length }})
           </button>
         </div>
       </div>
-      <div class="table-wrap view-grouped"><table><thead><tr><th>Row</th>{% for column in dataset.column_names %}{% set is_sub = column in subcolumn_to_group %}<th class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}" data-column="{{ column }}">{{ column }}{% if column in grouped_categories %} <span class="col-group-indicator">Grouped</span>{% endif %}</th>{% endfor %}</tr></thead><tbody>
+      <div class="table-wrap view-grouped"><table><thead><tr><th>Row</th>{% for column in (visible_columns or dataset.column_names) %}{% set is_sub = column in subcolumn_to_group %}<th class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}" data-column="{{ column }}">{{ column }}{% if column in grouped_categories %} <span class="col-group-indicator">Grouped</span>{% endif %}</th>{% endfor %}</tr></thead><tbody>
         {% for entry in all_pid_rows %}
           <tr data-dataset-row="true"
               data-primary-pid="{{ entry.primary_pid }}"
               data-pids="{{ entry.pids|join(' ')|lower }}"
               data-row-index="{{ entry.index + 1 }}">
-            <td>{{ entry.index + 1 }}</td>{% for column in dataset.column_names %}{% set is_sub = column in subcolumn_to_group %}<td class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}"{% if column in label_maps %} data-label-column="{{ column }}" data-raw-value="{{ entry.record.get(column) }}"{% endif %}>{{ entry.record.get(column) if entry.record.get(column) is not none else "—" }}</td>{% endfor %}</tr>
+            <td>{{ entry.index + 1 }}</td>{% for column in (visible_columns or dataset.column_names) %}{% set is_sub = column in subcolumn_to_group %}<td class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}"{% if column in label_maps %} data-label-column="{{ column }}" data-raw-value="{{ entry.record.get(column) }}"{% endif %}>{{ entry.record.get(column) if entry.record.get(column) is not none else "—" }}</td>{% endfor %}</tr>
         {% endfor %}
       </tbody></table></div>
     </section>
@@ -900,7 +903,7 @@
           ⊞ Grouped columns (Default)
         </button>
         <button type="button" class="button table-mode-btn" data-table-mode="all" aria-pressed="false">
-          ☰ Show all columns ({{ dataset.column_names|length }})
+          ☰ Show all columns ({{ (visible_columns or dataset.column_names)|length }})
         </button>
       </div>
       {% if preview|length > 10 %}
@@ -915,7 +918,7 @@
         <thead>
           <tr>
             <th>Row</th>
-            {% for column in dataset.column_names %}
+            {% for column in (visible_columns or dataset.column_names) %}
               {% set is_sub = column in subcolumn_to_group %}
               <th class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}" data-column="{{ column }}">{{ column }}{% if column in grouped_categories %} <span class="col-group-indicator">Grouped</span>{% endif %}</th>
             {% endfor %}
@@ -925,7 +928,7 @@
           {% for row in preview %}
             <tr data-dataset-row="true" {% if loop.index > 10 %}class="preview-extra-row" hidden{% endif %} data-primary-pid="{% for col in pid_candidates %}{% if row[col] and row[col] != None %}{{ row[col] }}{% endif %}{% endfor %}">
               <td>{{ loop.index }}</td>
-              {% for column in dataset.column_names %}
+              {% for column in (visible_columns or dataset.column_names) %}
                 {% set is_sub = column in subcolumn_to_group %}
                 <td class="{% if is_sub %}col-subcolumn{% else %}col-standalone{% endif %}"{% if column in label_maps %} data-label-column="{{ column }}" data-raw-value="{{ row[column] }}"{% endif %}>{{ row[column] if row[column] is not none else "—" }}</td>
               {% endfor %}
@@ -1008,6 +1011,79 @@
       </div>
       <div class="pid-chip-grid" id="pid-chip-grid" aria-live="polite"></div>
       <p class="pid-modal-hint">💡 Click any PID to jump to its row in the dataset view below.</p>
+    </div>
+  </dialog>
+
+  {# ── Hide / Unhide Columns Modal ── #}
+  <dialog id="hide-columns-modal" class="dash-modal" aria-labelledby="hide-columns-modal-title">
+    <div class="modal-inner hide-columns-modal-inner">
+      <div class="modal-header">
+        <div>
+          <h3 id="hide-columns-modal-title">🔒 Hide / Unhide Columns</h3>
+          <p class="pid-modal-subtitle">Locked columns are hidden from charts and tables below without deleting any data.</p>
+        </div>
+        <button type="button" class="modal-close-btn" id="hide-columns-close" aria-label="Close">✕</button>
+      </div>
+
+      <div id="hide-cols-auth-step">
+        <form id="hide-cols-auth-form">
+          <div class="modal-fields">
+            <label class="modal-field-label" for="hide-cols-password">Enter Authorized Password to Manage Column Visibility</label>
+            <input type="password" id="hide-cols-password" class="modal-input" placeholder="Enter password..." autocomplete="current-password" required>
+            <p class="modal-error" id="hide-cols-auth-error" hidden></p>
+          </div>
+          <div class="modal-footer">
+            <button type="submit" class="button primary">Unlock Controls</button>
+            <button type="button" class="button" id="hide-cols-auth-cancel">Cancel</button>
+          </div>
+        </form>
+      </div>
+
+      <div id="hide-cols-list-step" hidden>
+        <div class="pid-modal-toolbar">
+          <input type="search" id="hide-cols-search" class="modal-input" placeholder="Search columns (e.g. name, surname, phone)…" autocomplete="off">
+          <span class="pid-modal-count" id="hide-cols-count"></span>
+        </div>
+        <div class="hide-cols-table-wrap">
+          <table class="hide-cols-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Column Name</th>
+                <th>Status</th>
+                <th style="text-align:right;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="hide-cols-tbody">
+              {% for col in dataset.column_names %}
+                {% set is_locked = col in (hidden_columns or []) %}
+                <tr class="hide-col-row {% if is_locked %}is-locked{% endif %}" data-column="{{ col }}" data-locked="{{ 'true' if is_locked else 'false' }}">
+                  <td>{{ loop.index }}</td>
+                  <td>
+                    <span class="hide-col-name">{{ col }}</span>
+                    {% if dataset.original_headers and dataset.original_headers.get(col) and dataset.original_headers.get(col) != col %}
+                      <span class="hide-col-orig">{{ dataset.original_headers.get(col) }}</span>
+                    {% endif %}
+                  </td>
+                  <td>
+                    <span class="hide-col-badge {% if is_locked %}badge-locked{% else %}badge-visible{% endif %}">
+                      {% if is_locked %}🔒 Locked{% else %}👁 Visible{% endif %}
+                    </span>
+                  </td>
+                  <td style="text-align:right;">
+                    <button type="button" class="button small hide-col-toggle-btn" data-column="{{ col }}">
+                      {% if is_locked %}🔓 Unlock{% else %}🔒 Lock{% endif %}
+                    </button>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="button primary" id="hide-cols-done-btn">Done &amp; Refresh Dashboard</button>
+        </div>
+      </div>
     </div>
   </dialog>
 

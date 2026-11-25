@@ -31,7 +31,7 @@
       <div class="study-main-card-header">
         <div class="study-icon-wrap">
           <span class="study-icon {% if study.saved_path %}study-icon-saved{% endif %}"
-            title="{% if study.saved_path %}File folder: {{ study.saved_path }}{% else %}No local path recorded{% endif %}">
+            title="{% if study.saved_path %}Local folder assigned (password protected){% else %}No local path recorded{% endif %}">
             {% if study.saved_path %}📂{% else %}▤{% endif %}
           </span>
         </div>
@@ -56,14 +56,15 @@
         </div>
       </div>
 
-      {# Folder path display & change option #}
+      {# Folder path display (password-protected) & change option #}
       <div class="study-folder-banner">
         <div class="folder-banner-left">
           <span class="folder-icon">📁</span>
           <div class="folder-info">
             <span class="folder-caption">Study Loading Folder:</span>
             {% if study.saved_path %}
-            <code class="folder-path-display" title="{{ study.saved_path }}">{{ study.saved_path }}</code>
+            <span class="folder-path-hidden" id="study-path-display-{{ study.id }}">🔒 Path hidden</span>
+            <button type="button" class="button small view-path-btn" data-study-id="{{ study.id }}" data-target-id="study-path-display-{{ study.id }}">👁 View Path</button>
             {% else %}
             <span class="folder-path-empty">No folder assigned</span>
             {% endif %}
@@ -75,7 +76,7 @@
             action="{{ url_for('save_dataset_path', dataset_id=study.id) }}">
             <input type="hidden" name="return_to" value="index">
             <input type="text" name="saved_path" class="folder-path-input" placeholder="e.g. C:\Research\Studies\Study1"
-              value="{{ study.saved_path or '' }}" required>
+              value="" required>
             <button type="submit" class="button small">Save</button>
           </form>
         </details>
@@ -291,8 +292,8 @@
           <td><code>{{ s.filename }}</code></td>
           <td>
             {% if s.saved_path %}
-            <code class="folder-path-cell"
-              title="{{ s.saved_path }}">📂 {{ s.saved_path | truncate(45, True, '…') }}</code>
+            <span class="folder-path-hidden" id="history-path-display-{{ s.id }}">🔒 Hidden</span>
+            <button type="button" class="button small view-path-btn" data-study-id="{{ s.id }}" data-target-id="history-path-display-{{ s.id }}">👁 View Path</button>
             {% else %}
             <span class="muted">—</span>
             {% endif %}
@@ -327,5 +328,97 @@
   {% endif %}
 </section>
 
+<dialog id="view-path-modal" class="dash-modal" aria-labelledby="view-path-modal-title">
+  <div class="modal-inner">
+    <div class="modal-header">
+      <h3 id="view-path-modal-title">🔒 Enter Password to View Path</h3>
+      <button type="button" class="modal-close-btn" id="view-path-close" aria-label="Close">✕</button>
+    </div>
+    <form id="view-path-form">
+      <div class="modal-fields">
+        <label class="modal-field-label" for="view-path-password">Authorized Password</label>
+        <input type="password" id="view-path-password" class="modal-input" placeholder="Enter password..." autocomplete="current-password" required>
+        <p class="modal-error" id="view-path-error" hidden></p>
+      </div>
+      <div class="modal-footer">
+        <button type="submit" class="button primary">Unlock Path</button>
+        <button type="button" class="button" id="view-path-cancel">Cancel</button>
+      </div>
+    </form>
+  </div>
+</dialog>
+
 <script src="{{ url_for('static', filename='upload.js') }}" defer></script>
+<script>
+  (function () {
+    const modal = document.getElementById("view-path-modal");
+    const form = document.getElementById("view-path-form");
+    const pwInput = document.getElementById("view-path-password");
+    const errEl = document.getElementById("view-path-error");
+    const closeBtn = document.getElementById("view-path-close");
+    const cancelBtn = document.getElementById("view-path-cancel");
+    if (!modal || !form) return;
+
+    let activeStudyId = null;
+    let activeTargetId = null;
+    let activeButton = null;
+
+    function closeModal() {
+      modal.close();
+      pwInput.value = "";
+      errEl.hidden = true;
+      errEl.textContent = "";
+    }
+
+    closeBtn.addEventListener("click", closeModal);
+    cancelBtn.addEventListener("click", closeModal);
+
+    document.addEventListener("click", function (e) {
+      const btn = e.target.closest(".view-path-btn");
+      if (!btn) return;
+      activeStudyId = btn.dataset.studyId;
+      activeTargetId = btn.dataset.targetId;
+      activeButton = btn;
+      pwInput.value = "";
+      errEl.hidden = true;
+      modal.showModal();
+      pwInput.focus();
+    });
+
+    form.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      errEl.hidden = true;
+      const password = pwInput.value;
+      try {
+        const resp = await fetch(`/studies/${activeStudyId}/reveal-path`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password }),
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) {
+          errEl.textContent = data.error || "Incorrect password.";
+          errEl.hidden = false;
+          pwInput.select();
+          return;
+        }
+        const target = document.getElementById(activeTargetId);
+        if (target) {
+          const codeEl = document.createElement("code");
+          codeEl.className = "folder-path-display";
+          codeEl.title = data.saved_path;
+          codeEl.textContent = data.saved_path || "No folder assigned";
+          target.replaceWith(codeEl);
+        }
+        if (activeButton) {
+          activeButton.hidden = true;
+        }
+        closeModal();
+      } catch (err) {
+        errEl.textContent = "Could not verify password. Try again.";
+        errEl.hidden = false;
+      }
+    });
+  })();
+</script>
 {% endblock %}

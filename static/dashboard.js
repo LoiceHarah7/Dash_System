@@ -324,3 +324,156 @@ window.navigateToPidRow = navigateToPidRow;
     }
   });
 })();
+
+
+/* ===== Hide / Unhide Columns Modal (Password-Protected) ===== */
+(function initHideColumnsModal() {
+  const toggleBtn = document.getElementById("hide-columns-toggle");
+  const modal = document.getElementById("hide-columns-modal");
+  if (!toggleBtn || !modal) return;
+
+  const closeBtn = document.getElementById("hide-columns-close");
+  const authStep = document.getElementById("hide-cols-auth-step");
+  const authForm = document.getElementById("hide-cols-auth-form");
+  const pwInput = document.getElementById("hide-cols-password");
+  const authError = document.getElementById("hide-cols-auth-error");
+  const authCancel = document.getElementById("hide-cols-auth-cancel");
+
+  const listStep = document.getElementById("hide-cols-list-step");
+  const searchInput = document.getElementById("hide-cols-search");
+  const countEl = document.getElementById("hide-cols-count");
+  const tbody = document.getElementById("hide-cols-tbody");
+  const doneBtn = document.getElementById("hide-cols-done-btn");
+
+  const metaEl = document.getElementById("dataset-meta");
+  const datasetId = metaEl ? metaEl.dataset.datasetId : null;
+
+  let verifiedPassword = null;
+  let dirty = false;
+
+  function updateCount() {
+    if (!tbody || !countEl) return;
+    const rows = Array.from(tbody.querySelectorAll(".hide-col-row"));
+    const lockedCount = rows.filter((r) => r.dataset.locked === "true").length;
+    const visibleRows = rows.filter((r) => !r.hidden).length;
+    countEl.textContent = `${visibleRows} shown · ${lockedCount} locked`;
+  }
+
+  function openModal() {
+    dirty = false;
+    if (verifiedPassword) {
+      authStep.hidden = true;
+      listStep.hidden = false;
+      updateCount();
+      if (searchInput) searchInput.focus();
+    } else {
+      authStep.hidden = false;
+      listStep.hidden = true;
+      if (pwInput) pwInput.value = "";
+      if (authError) authError.hidden = true;
+    }
+    modal.showModal();
+    if (!verifiedPassword && pwInput) pwInput.focus();
+  }
+
+  function closeModal() {
+    modal.close();
+    if (dirty) {
+      window.location.reload();
+    }
+  }
+
+  toggleBtn.addEventListener("click", openModal);
+  if (closeBtn) closeBtn.addEventListener("click", closeModal);
+  if (authCancel) authCancel.addEventListener("click", () => modal.close());
+  if (doneBtn) doneBtn.addEventListener("click", closeModal);
+
+  if (authForm) {
+    authForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (authError) authError.hidden = true;
+      const password = pwInput.value;
+      try {
+        const resp = await fetch("/api/verify-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password }),
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) {
+          if (authError) {
+            authError.textContent = data.error || "Incorrect password.";
+            authError.hidden = false;
+          }
+          pwInput.select();
+          return;
+        }
+        verifiedPassword = password;
+        authStep.hidden = true;
+        listStep.hidden = false;
+        updateCount();
+        if (searchInput) searchInput.focus();
+      } catch (err) {
+        if (authError) {
+          authError.textContent = "Could not verify password. Try again.";
+          authError.hidden = false;
+        }
+      }
+    });
+  }
+
+  if (searchInput && tbody) {
+    searchInput.addEventListener("input", () => {
+      const q = searchInput.value.trim().toLowerCase();
+      const rows = tbody.querySelectorAll(".hide-col-row");
+      rows.forEach((row) => {
+        const text = row.textContent.toLowerCase();
+        row.hidden = q !== "" && !text.includes(q);
+      });
+      updateCount();
+    });
+  }
+
+  if (tbody && datasetId) {
+    tbody.addEventListener("click", async (e) => {
+      const btn = e.target.closest(".hide-col-toggle-btn");
+      if (!btn || !verifiedPassword) return;
+      const row = btn.closest(".hide-col-row");
+      const column = btn.dataset.column;
+      const currentlyLocked = row.dataset.locked === "true";
+      const nextLocked = !currentlyLocked;
+
+      btn.disabled = true;
+      try {
+        const resp = await fetch(`/studies/${datasetId}/hidden-columns`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            password: verifiedPassword,
+            column,
+            locked: nextLocked,
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) {
+          alert(data.error || "Could not update column lock state.");
+          return;
+        }
+        dirty = true;
+        row.dataset.locked = nextLocked ? "true" : "false";
+        row.classList.toggle("is-locked", nextLocked);
+        const badge = row.querySelector(".hide-col-badge");
+        if (badge) {
+          badge.className = `hide-col-badge ${nextLocked ? "badge-locked" : "badge-visible"}`;
+          badge.textContent = nextLocked ? "🔒 Locked" : "👁 Visible";
+        }
+        btn.textContent = nextLocked ? "🔓 Unlock" : "🔒 Lock";
+        updateCount();
+      } catch (err) {
+        alert("Network error while updating column visibility.");
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+})();

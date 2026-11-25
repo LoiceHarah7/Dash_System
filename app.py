@@ -109,6 +109,8 @@ class StudyDataset(db.Model):
     # Maps sanitized header -> original header (for display only)
     original_headers = db.Column(db.JSON, nullable=True)
     charts_cache = db.Column(db.JSON, nullable=True)
+    # Columns locked/hidden from dashboard display by an authorized user
+    hidden_columns = db.Column(db.JSON, nullable=True)
 
 
 class StudyPidSelection(db.Model):
@@ -139,6 +141,26 @@ class ParticipantTracking(db.Model):
     endo_status = db.Column(db.String(50), nullable=True)
     endo_date = db.Column(db.String(100), nullable=True)
     comment = db.Column(db.String(500), nullable=True)
+
+
+class AppSetting(db.Model):
+    """Key-value settings stored in the database (e.g. admin_password)."""
+
+    key = db.Column(db.String(100), primary_key=True)
+    value = db.Column(db.String(500), nullable=False)
+
+
+def get_admin_password():
+    """Return the current admin password from AppSetting (defaults to DATA123)."""
+    setting = db.session.get(AppSetting, "admin_password")
+    return setting.value if setting and setting.value else "DATA123"
+
+
+def verify_admin_password(candidate):
+    """Return True if candidate matches the stored admin password."""
+    if not isinstance(candidate, str):
+        return False
+    return candidate == get_admin_password()
 
 
 def make_unique_headers(headers):
@@ -3201,6 +3223,55 @@ def dashboard(dataset_id):
             if matching_col and matching_col not in label_maps:
                 label_maps[matching_col] = choices
 
+    hidden_columns = list(dataset.hidden_columns or [])
+    hidden_set = set(hidden_columns)
+    visible_columns = [c for c in (dataset.column_names or []) if c not in hidden_set]
+    if hidden_set:
+        def _is_chart_hidden(chart):
+            key = chart.get("key") or chart.get("name")
+            if key in hidden_set or chart.get("name") in hidden_set:
+                return True
+            if chart.get("parent_group") in hidden_set:
+                return True
+            if chart.get("is_grouped") and chart.get("group_columns"):
+                if all(gc in hidden_set for gc in chart["group_columns"]):
+                    return True
+            return False
+
+        old_to_new_idx = {}
+        visible_charts = []
+        for old_i, c in enumerate(charts):
+            if not _is_chart_hidden(c):
+                old_to_new_idx[old_i] = len(visible_charts)
+                visible_charts.append(c)
+        charts = visible_charts
+
+        def _remap_sections(sec_list):
+            remapped = []
+            for sec in sec_list:
+                kept_entries = []
+                for entry in sec.get("charts", []):
+                    new_idx = old_to_new_idx.get(entry.get("index"))
+                    if new_idx is not None:
+                        kept_entries.append({"chart": entry["chart"], "index": new_idx})
+                if kept_entries:
+                    new_sec = dict(sec)
+                    new_sec["charts"] = kept_entries
+                    remapped.append(new_sec)
+            return remapped
+
+        chart_sections = _remap_sections(chart_sections)
+        if form_sections:
+            new_form_sections = OrderedDict()
+            for fname, fdata in form_sections.items():
+                remapped_fcharts = _remap_sections(fdata.get("charts", []))
+                if remapped_fcharts:
+                    new_form_sections[fname] = {
+                        "raw_form": fdata.get("raw_form"),
+                        "charts": remapped_fcharts,
+                    }
+            form_sections = new_form_sections
+
     grouped_chart_count = sum(
         1
         for chart in charts
@@ -3262,6 +3333,8 @@ def dashboard(dataset_id):
         unique_participant_pids=unique_participant_pids,
         form_sections=form_sections,
         has_form_map=has_form_map,
+        hidden_columns=hidden_columns,
+        visible_columns=visible_columns,
     )
 
 
@@ -3863,6 +3936,68 @@ def inspect_headers():
         return {"columns": [], "error": str(error)}, 200
 
 
+@app.route("/api/verify-password", methods=["POST"])
+def api_verify_password():
+    """Verify the admin password stored in AppSetting."""
+    payload = request.get_json(silent=True) or {}
+    password = payload.get("password", "")
+    if verify_admin_password(password):
+        return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": "Incorrect password."}), 403
+
+
+@app.route("/studies/<int:dataset_id>/reveal-path", methods=["POST"])
+def reveal_study_path(dataset_id):
+    """Return the saved_path for a study only after verifying the admin password."""
+    dataset = db.session.get(StudyDataset, dataset_id)
+    if dataset is None:
+        abort(404)
+    payload = request.get_json(silent=True) or {}
+    password = payload.get("password", "")
+    if not verify_admin_password(password):
+        return jsonify({"ok": False, "error": "Incorrect password."}), 403
+    return jsonify({"ok": True, "saved_path": dataset.saved_path or ""})
+
+
+@app.route("/studies/<int:dataset_id>/hidden-columns", methods=["POST"])
+def update_hidden_columns(dataset_id):
+    """Lock or unlock one or more columns on a study dashboard (password-protected)."""
+    dataset = db.session.get(StudyDataset, dataset_id)
+    if dataset is None:
+        abort(404)
+    payload = request.get_json(silent=True) or {}
+    password = payload.get("password", "")
+    if not verify_admin_password(password):
+        return jsonify({"ok": False, "error": "Incorrect password."}), 403
+
+    valid_cols = set(dataset.column_names or [])
+    current_hidden = list(dataset.hidden_columns or [])
+
+    if "hidden_columns" in payload and isinstance(payload["hidden_columns"], list):
+        new_hidden = [c for c in payload["hidden_columns"] if c in valid_cols]
+    elif "column" in payload:
+        col = payload.get("column")
+        if col not in valid_cols:
+            return jsonify({"ok": False, "error": "Unknown column."}), 400
+        locked = bool(payload.get("locked"))
+        hidden_set = set(current_hidden)
+        if locked:
+            hidden_set.add(col)
+        else:
+            hidden_set.discard(col)
+        new_hidden = [c for c in (dataset.column_names or []) if c in hidden_set]
+    else:
+        return jsonify({"ok": False, "error": "Missing column or hidden_columns."}), 400
+
+    dataset.hidden_columns = new_hidden
+    try:
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        return jsonify({"ok": False, "error": "Could not save locked columns."}), 500
+    return jsonify({"ok": True, "hidden_columns": new_hidden})
+
+
 with app.app_context():
     # Ensure the instance directory exists so SQLite can create the DB file
     # on a fresh clone (the directory is git-tracked via .gitkeep but the
@@ -3884,11 +4019,16 @@ with app.app_context():
                 conn.execute(text("ALTER TABLE study_dataset ADD COLUMN original_headers JSON"))
             if "charts_cache" not in existing_cols:
                 conn.execute(text("ALTER TABLE study_dataset ADD COLUMN charts_cache JSON"))
+            if "hidden_columns" not in existing_cols:
+                conn.execute(text("ALTER TABLE study_dataset ADD COLUMN hidden_columns JSON"))
             # Clean up any orphan rows in child tables where dataset_id no longer exists
             conn.execute(text("DELETE FROM study_pid_selection WHERE dataset_id NOT IN (SELECT id FROM study_dataset)"))
             conn.execute(text("DELETE FROM study_codebook WHERE dataset_id NOT IN (SELECT id FROM study_dataset)"))
             conn.execute(text("DELETE FROM participant_tracking WHERE dataset_id IS NOT NULL AND dataset_id NOT IN (SELECT id FROM study_dataset)"))
             conn.commit()
+        if db.session.get(AppSetting, "admin_password") is None:
+            db.session.add(AppSetting(key="admin_password", value="DATA123"))
+            db.session.commit()
     except Exception as e:
         app.logger.warning("Auto-migration note: %s", e)
 
