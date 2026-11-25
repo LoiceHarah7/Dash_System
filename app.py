@@ -14,6 +14,7 @@ from flask import (
     Flask,
     abort,
     flash,
+    jsonify,
     redirect,
     render_template,
     request,
@@ -42,10 +43,45 @@ db = SQLAlchemy(app)
 # Schema version for StudyDataset.charts_cache.
 # Bump this number whenever chart-building, grouping, or caching structures change
 # so stale cached entries are automatically invalidated and rebuilt on next load.
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2  # bumped: pids stripped from chart variants (stored separately)
 
 # Maximum rows included in dashboard data preview payload to prevent DOM bloating
 PREVIEW_ROW_LIMIT = 200
+
+
+def _strip_pids_from_charts(charts):
+    """Return a copy of *charts* with all 'pids' arrays removed from variants.
+
+    PIDs are fetched on demand via /studies/<id>/category-pids so they don't
+    need to live in the chart-data JSON blob that the browser parses on every
+    page load.  For the BCC study this reduces the JSON from ~243 MB to ~1 MB.
+    """
+    stripped = []
+    for chart in charts:
+        c = {k: v for k, v in chart.items() if k != "variants"}
+        variants = []
+        for v in chart.get("variants", []):
+            variants.append({k: val for k, val in v.items() if k != "pids"})
+        c["variants"] = variants
+        stripped.append(c)
+    return stripped
+
+
+def _pids_index_from_charts(charts):
+    """Build a nested dict  chart_name → variant_index → category_index → [pids].
+
+    This is stored separately in charts_cache under the key 'pids_index' so the
+    /category-pids endpoint can answer PID lookups without re-running any
+    computation.
+    """
+    index = {}
+    for chart in charts:
+        name = chart.get("name") or chart.get("key", "")
+        for vi, variant in enumerate(chart.get("variants", [])):
+            pids = variant.get("pids")
+            if pids:
+                index.setdefault(name, {})[vi] = pids
+    return index
 
 
 class StudyDataset(db.Model):
@@ -682,6 +718,22 @@ def is_excluded_visualization_column(column):
     )
 
 
+def _is_date_like_column_name(name):
+    """Return True for column names that look like date fields.
+
+    Date columns (e.g. 'Date of biopsy 1', 'consent_date_2') must not be
+    grouped as multi-response subcolumns even when their sanitized name ends in
+    a number, because they are not check-all-that-apply options.
+    """
+    lower = str(name).lower()
+    date_hints = (
+        "date", "dob", "birth", "biopsy", "reported", "received",
+        "consent", "enrolled", "withdraw", "death", "died", "censor",
+        "progress", "start", "stop", "visit", "appointment",
+    )
+    return any(kw in lower for kw in date_hints)
+
+
 def group_question_columns(df):
     columns = list(df.columns) if hasattr(df, "columns") else list(df)
     eligible_columns = [
@@ -695,6 +747,10 @@ def group_question_columns(df):
     for column in eligible_columns:
         stem, code, delimiter = extract_option_match(column)
         if stem is not None:
+            # Skip date-like columns — 'Date of biopsy 1' ends in 1 but is not
+            # a multi-response checkbox option.
+            if _is_date_like_column_name(column):
+                continue
             options_by_stem.setdefault(stem.casefold(), []).append(
                 (column, stem, code, delimiter)
             )
@@ -723,6 +779,9 @@ def group_question_columns(df):
     )
     for column in eligible_columns:
         if column in subcolumn_to_group:
+            continue
+        # Date columns are never multi-response options
+        if _is_date_like_column_name(column):
             continue
         col_str = str(column)
         m = choice_pattern.match(col_str) or slug_choice_pattern.match(col_str)
@@ -1000,6 +1059,12 @@ def coerce_edited_value(original, value):
 def multiselect_selection(value):
     if is_missing(value):
         return False
+    # Date strings (e.g. "02-Dec-16") must never be counted as "selected"
+    if isinstance(value, str):
+        v = value.strip()
+        _mon = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)"
+        if re.match(rf"^\d{{1,2}}[-/\s]{_mon}[-/\s]\d{{2,4}}$", v, re.IGNORECASE):
+            return False
     code = normalize_code(value)
     return str(code).casefold() not in {"0", "false", "no", "off", "unchecked", ""}
 
@@ -1505,23 +1570,41 @@ def _build_text_chart(column, values, row_pids, description=""):
             )
 
     raw_values = values.astype(str)
-    # Detect dates in both YYYY-MM-DD (ISO) and DD/MM/YYYY (European) formats
+    # Detect dates in ISO (YYYY-MM-DD), European (DD/MM/YYYY), and
+    # month-abbreviation (DD-Mon-YY / DD-Mon-YYYY) formats.
     is_iso_date = raw_values.str.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}").mean() >= 0.5
     is_dmy_date = raw_values.str.match(r"^\d{1,2}[/-]\d{1,2}[/-]\d{4}").mean() >= 0.5
-    looks_like_date = is_iso_date or is_dmy_date
+    _month_abbr = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)"
+    is_mon_date = raw_values.str.match(
+        rf"^\d{{1,2}}[-/\s]{_month_abbr}[-/\s]\d{{2,4}}$",
+        case=False,
+    ).mean() >= 0.5
+    looks_like_date = is_iso_date or is_dmy_date or is_mon_date
     if looks_like_date:
-        use_dayfirst = bool(is_dmy_date and not is_iso_date)
-        try:
-            parsed_dates = pd.to_datetime(
-                raw_values, errors="coerce", format="mixed", dayfirst=use_dayfirst
-            )
-        except Exception:
+        if is_mon_date and not is_iso_date and not is_dmy_date:
+            # Try DD-Mon-YY first (2-digit year), then DD-Mon-YYYY
             try:
-                parsed_dates = pd.to_datetime(
-                    raw_values, errors="coerce", dayfirst=use_dayfirst
-                )
+                parsed_dates = pd.to_datetime(raw_values, format="%d-%b-%y", errors="coerce")
+                if parsed_dates.notna().mean() < 0.5:
+                    parsed_dates = pd.to_datetime(raw_values, format="%d-%b-%Y", errors="coerce")
+                if parsed_dates.notna().mean() < 0.5:
+                    # Try with space/slash separators as fallback
+                    parsed_dates = pd.to_datetime(raw_values, errors="coerce")
             except Exception:
                 parsed_dates = pd.to_datetime(raw_values, errors="coerce")
+        else:
+            use_dayfirst = bool(is_dmy_date and not is_iso_date)
+            try:
+                parsed_dates = pd.to_datetime(
+                    raw_values, errors="coerce", format="mixed", dayfirst=use_dayfirst
+                )
+            except Exception:
+                try:
+                    parsed_dates = pd.to_datetime(
+                        raw_values, errors="coerce", dayfirst=use_dayfirst
+                    )
+                except Exception:
+                    parsed_dates = pd.to_datetime(raw_values, errors="coerce")
     else:
         parsed_dates = pd.Series(dtype="datetime64[ns]")
     if looks_like_date and parsed_dates.notna().sum() >= len(raw_values) * 0.5:
@@ -2598,9 +2681,12 @@ def upload():
 
         detected_pid_columns = detect_pid_columns(cleaned.columns)
         if codebook_data is not None:
+            # Clean up any potential stale/orphan codebook row for this id
+            StudyCodebook.query.filter_by(dataset_id=dataset.id).delete()
             codebook_data.dataset_id = dataset.id
             db.session.add(codebook_data)
         if clean_columns and len(clean_columns) == 1 and clean_columns[0] in detected_pid_columns:
+            StudyPidSelection.query.filter_by(dataset_id=dataset.id).delete()
             db.session.add(
                 StudyPidSelection(
                     dataset_id=dataset.id,
@@ -2608,6 +2694,7 @@ def upload():
                 )
             )
         elif len(detected_pid_columns) == 1:
+            StudyPidSelection.query.filter_by(dataset_id=dataset.id).delete()
             db.session.add(
                 StudyPidSelection(
                     dataset_id=dataset.id,
@@ -2646,6 +2733,67 @@ def clear_charts_cache(dataset_id):
         return redirect(url_for("dashboard", dataset_id=dataset.id))
     flash("Chart cache cleared. Next page load will rebuild charts.", "success")
     return redirect(url_for("dashboard", dataset_id=dataset.id))
+
+
+@app.route("/studies/<int:dataset_id>/category-pids", methods=["POST"])
+def category_pids(dataset_id):
+    dataset = db.session.get(StudyDataset, dataset_id)
+    if dataset is None:
+        abort(404)
+
+    chart_index = request.form.get("chart_index", type=int)
+    variant_index = request.form.get("variant_index", default=0, type=int)
+    category_index = request.form.get("category_index", type=int)
+    chart_name = request.form.get("chart_name")
+    category_label = request.form.get("category_label")
+
+    # 1. Try reading from charts_cache['pids_index']
+    cache = dataset.charts_cache
+    if cache and isinstance(cache, dict):
+        pids_index = cache.get("pids_index", {})
+        if chart_name and chart_name in pids_index:
+            var_map = pids_index[chart_name]
+            pids_list_for_var = var_map.get(str(variant_index)) or var_map.get(variant_index)
+            if pids_list_for_var and category_index is not None and 0 <= category_index < len(pids_list_for_var):
+                return jsonify({"pids": pids_list_for_var[category_index]})
+
+        # If indexed by chart_index
+        charts = cache.get("charts", [])
+        if chart_index is not None and 0 <= chart_index < len(charts):
+            c_name = charts[chart_index].get("name") or charts[chart_index].get("key")
+            if c_name and c_name in pids_index:
+                var_map = pids_index[c_name]
+                pids_list_for_var = var_map.get(str(variant_index)) or var_map.get(variant_index)
+                if pids_list_for_var and category_index is not None and 0 <= category_index < len(pids_list_for_var):
+                    return jsonify({"pids": pids_list_for_var[category_index]})
+
+    # 2. Fallback: on-demand computation for this specific dataset
+    codebook = db.session.get(StudyCodebook, dataset.id)
+    codebook_data = codebook.variables if codebook else None
+    computed_charts, _, _ = dashboard_data(dataset, codebook_data)
+
+    target_chart = None
+    if chart_index is not None and 0 <= chart_index < len(computed_charts):
+        target_chart = computed_charts[chart_index]
+    elif chart_name:
+        for c in computed_charts:
+            if c.get("name") == chart_name or c.get("key") == chart_name:
+                target_chart = c
+                break
+
+    if target_chart and target_chart.get("variants"):
+        if 0 <= variant_index < len(target_chart["variants"]):
+            variant = target_chart["variants"][variant_index]
+            pids_arr = variant.get("pids") or []
+            if category_index is not None and 0 <= category_index < len(pids_arr):
+                return jsonify({"pids": pids_arr[category_index]})
+            if category_label:
+                labels = variant.get("labels") or []
+                for idx, lbl in enumerate(labels):
+                    if str(lbl).strip() == str(category_label).strip() and idx < len(pids_arr):
+                        return jsonify({"pids": pids_arr[idx]})
+
+    return jsonify({"pids": []})
 
 
 @app.route("/studies/<int:dataset_id>")
@@ -2841,7 +2989,8 @@ def dashboard(dataset_id):
                 if dataset.original_headers else None
             )
         dataset.charts_cache = {
-            "charts": charts,
+            "charts": _strip_pids_from_charts(charts),
+            "pids_index": _pids_index_from_charts(charts),
             "preview": preview,
             "all_dataset_pids": all_dataset_pids,
             "form_sections": form_sections,
@@ -3570,6 +3719,10 @@ def inspect_headers():
 
 
 with app.app_context():
+    # Ensure the instance directory exists so SQLite can create the DB file
+    # on a fresh clone (the directory is git-tracked via .gitkeep but the
+    # database file itself is git-ignored for data privacy).
+    os.makedirs(app.instance_path, exist_ok=True)
     db.create_all()
     try:
         from sqlalchemy import inspect, text
@@ -3586,6 +3739,10 @@ with app.app_context():
                 conn.execute(text("ALTER TABLE study_dataset ADD COLUMN original_headers JSON"))
             if "charts_cache" not in existing_cols:
                 conn.execute(text("ALTER TABLE study_dataset ADD COLUMN charts_cache JSON"))
+            # Clean up any orphan rows in child tables where dataset_id no longer exists
+            conn.execute(text("DELETE FROM study_pid_selection WHERE dataset_id NOT IN (SELECT id FROM study_dataset)"))
+            conn.execute(text("DELETE FROM study_codebook WHERE dataset_id NOT IN (SELECT id FROM study_dataset)"))
+            conn.execute(text("DELETE FROM participant_tracking WHERE dataset_id IS NOT NULL AND dataset_id NOT IN (SELECT id FROM study_dataset)"))
             conn.commit()
     except Exception as e:
         app.logger.warning("Auto-migration note: %s", e)

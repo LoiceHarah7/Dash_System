@@ -13,10 +13,14 @@ venv/
 #IDE settings
 .vscode/
 
-#flask instance folder
-instance/
+#flask instance folder - keep the directory tracked, ignore only the database files (they contain research data)
+instance/*.db
+instance/*.db-shm
+instance/*.db-wal
+# keep the directory itself tracked via .gitkeep
+!instance/.gitkeep
 
-#oparating system files
+#operating system files
 .DS_Store
 Thumbs.db
 
@@ -27,4 +31,3 @@ saved_studies/**/
 merged/
 *.xlsx
 *.xls
-

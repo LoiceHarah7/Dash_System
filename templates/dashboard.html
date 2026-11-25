@@ -813,6 +813,7 @@
       </details>
     {% endif %}
     {% if charts %}
+      <meta id="dataset-meta" data-dataset-id="{{ dataset.id }}">
       <script id="chart-data" type="application/json">{{ charts|tojson }}</script>
       <script id="label-map-data" type="application/json">{{ label_maps|tojson }}</script>
       <script id="all-pids-data" type="application/json">{{ all_dataset_pids|tojson }}</script>

@@ -1636,6 +1636,134 @@ class ExcelSerialDateTests(unittest.TestCase):
                          "String DD/MM/YYYY dates should still produce a date chart")
 
 
+class MonthAbbrevDateTests(unittest.TestCase):
+    """Tests for DD-Mon-YY and DD-Mon-YYYY date handling and multi-response protection."""
+
+    def _chart(self, col_name, values):
+        from app import build_single_column_chart
+        df = pd.DataFrame(
+            {col_name: values, "pid": [f"P{i}" for i in range(len(values))]}
+        )
+        return build_single_column_chart(col_name, df, {}, {}, set(), row_pids=df["pid"])
+
+    def test_dd_mon_yy_dates_render_as_monthly_trend_line(self):
+        """Values like '02-Dec-16', '07-Nov-16' render as monthly trend line, not donut/categories."""
+        values = ["02-Dec-16", "07-Nov-16", "14-Nov-16", "18-Nov-2016", "10-Jan-17"]
+        chart = self._chart("biopsy_date", values)
+        self.assertIsNotNone(chart)
+        self.assertEqual(chart.get("kind"), "date")
+        variant = chart["variants"][0]
+        self.assertEqual(variant.get("type"), "line")
+        labels = variant.get("labels", [])
+        self.assertTrue(any(l.startswith("2016-") or l.startswith("2017-") for l in labels),
+                        f"Expected YYYY-MM period labels, got {labels}")
+
+    def test_mixed_date_formats_parse_correctly(self):
+        """Columns with both '02-Dec-16' and '2016-12-02' parse as date chart."""
+        values = ["02-Dec-16", "2016-12-02", "14-Nov-16", "2016-11-14"]
+        chart = self._chart("consent_date", values)
+        self.assertIsNotNone(chart)
+        self.assertEqual(chart.get("kind"), "date")
+
+    def test_dob_column_with_dd_mon_yy_renders_as_year_buckets(self):
+        """DOB with '02-Dec-66' renders as year buckets, not binary donut."""
+        values = ["02-Dec-66", "15-May-75", "20-Jan-80", "12-Aug-90"]
+        chart = self._chart("dob", values)
+        self.assertIsNotNone(chart)
+        self.assertEqual(chart.get("kind"), "date")
+        labels = chart["variants"][0]["labels"]
+        self.assertTrue(all(len(lbl) == 4 and lbl.isdigit() for lbl in labels),
+                        f"Expected year labels, got {labels}")
+
+    def test_date_of_biopsy_1_not_grouped_as_multiselect_subcolumn(self):
+        """Columns like 'Date of biopsy 1' must not be grouped as multi-response subcolumns."""
+        from app import group_question_columns
+        cols = ["Date of biopsy 1", "Date of biopsy 2", "other_q1", "other_q2"]
+        groups = group_question_columns(cols)
+        # 'Date of biopsy 1' should remain an individual column, not merged into a multi-response group
+        self.assertEqual(groups.get("Date of biopsy 1"), ["Date of biopsy 1"])
+        self.assertEqual(groups.get("Date of biopsy 2"), ["Date of biopsy 2"])
+
+    def test_multiselect_selection_rejects_mon_dates(self):
+        """multiselect_selection('02-Dec-16') must return False, not True."""
+        from app import multiselect_selection
+        self.assertFalse(multiselect_selection("02-Dec-16"))
+        self.assertFalse(multiselect_selection("7-Nov-16"))
+        self.assertFalse(multiselect_selection("18-Nov-2016"))
+        # Real checkbox values
+        self.assertTrue(multiselect_selection("1"))
+        self.assertTrue(multiselect_selection("Checked"))
+        self.assertFalse(multiselect_selection("0"))
+        self.assertFalse(multiselect_selection("Unchecked"))
+
+
+class PIDOnDemandTests(unittest.TestCase):
+    """Tests for on-demand PID fetching endpoint and PID stripping from chart-data."""
+
+    def setUp(self):
+        app.config["TESTING"] = True
+        with app.app_context():
+            db.drop_all()
+            db.create_all()
+        self.client = app.test_client()
+
+    def tearDown(self):
+        with app.app_context():
+            db.session.remove()
+            db.engine.dispose()
+
+    def test_category_pids_endpoint_returns_pids(self):
+        """POST /studies/<id>/category-pids returns the list of PIDs for that category."""
+        from app import StudyDataset, db
+        with app.app_context():
+            records = [
+                {"pid": "P01", "gender": "Female"},
+                {"pid": "P02", "gender": "Female"},
+                {"pid": "P03", "gender": "Male"},
+            ]
+            ds = StudyDataset(
+                study_name="PID Test",
+                filename="test.csv",
+                rows=3,
+                columns=2,
+                duplicates_removed=0,
+                missing_values_filled=0,
+                column_names=["pid", "gender"],
+                records=records,
+            )
+            db.session.add(ds)
+            db.session.commit()
+            ds_id = ds.id
+
+        resp = self.client.post(
+            f"/studies/{ds_id}/category-pids",
+            data={
+                "chart_name": "gender",
+                "variant_index": "0",
+                "category_index": "0",
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertIn("pids", data)
+        self.assertGreater(len(data["pids"]), 0)
+
+    def test_charts_cache_strips_pids_from_variants(self):
+        """_strip_pids_from_charts removes 'pids' from all chart variants."""
+        from app import _strip_pids_from_charts
+        sample_charts = [
+            {
+                "name": "col1",
+                "variants": [
+                    {"type": "bar", "labels": ["A", "B"], "values": [1, 2], "pids": [["P1"], ["P2"]]}
+                ]
+            }
+        ]
+        stripped = _strip_pids_from_charts(sample_charts)
+        self.assertNotIn("pids", stripped[0]["variants"][0])
+        self.assertIn("labels", stripped[0]["variants"][0])
+
+
 class PersonalColumnImputation(unittest.TestCase):
     """Tests that personal names and DOB are never overwritten with global mode."""
 
@@ -2016,9 +2144,10 @@ class DashboardCacheTests(unittest.TestCase):
         self.assertIn("This can take 1–2 minutes for large studies.", html)
 
         with self.app.app_context():
+            from app import _SCHEMA_VERSION
             ds = self.db.session.query(StudyDataset).one()
             self.assertIsNotNone(ds.charts_cache)
-            self.assertEqual(ds.charts_cache.get("_schema_version"), 1)
+            self.assertEqual(ds.charts_cache.get("_schema_version"), _SCHEMA_VERSION)
             self.assertEqual(ds.charts_cache.get("_records_len"), 2)
             ds_id = ds.id
 

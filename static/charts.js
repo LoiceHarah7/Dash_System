@@ -78,7 +78,7 @@ function drawAxisLabel(svg, x, y, text, rotate, maxChars) {
   svg.append(node);
 }
 
-function drawVerticalBars(svg, labels, values, pids) {
+function drawVerticalBars(svg, labels, values, pids, chartIndex = null, variantIndex = 0, chartName = null) {
   const left = 66;
   const top = 26;
   const width = 710;
@@ -94,21 +94,22 @@ function drawVerticalBars(svg, labels, values, pids) {
     const x = left + index * slot + (slot - barWidth) / 2;
     const y = top + height - barHeight;
     const bar = element("rect", { x, y, width: barWidth, height: barHeight, rx: 6, class: "chart-bar", fill: chartColors[index % chartColors.length] });
-    if (pids && pids[index]) {
-      bar.style.cursor = "pointer";
-      bar.addEventListener("click", () => showPidsModal(null, labels[index], pids[index]));
-    }
+    const pidList = pids && pids[index];
+    const clickHandler = () => showPidsModal(chartName, labels[index], pidList, { chartIndex, variantIndex, categoryIndex: index });
+    bar.style.cursor = "pointer";
+    bar.addEventListener("click", clickHandler);
     svg.append(bar);
     if (slot >= 30) {
       const valText = element("text", { x: x + barWidth / 2, y: Math.max(y - 8, top + 10), "text-anchor": "middle", class: "chart-value" }, value.toLocaleString());
-      if (pids && pids[index]) { valText.style.cursor = "pointer"; valText.addEventListener("click", () => showPidsModal(null, labels[index], pids[index])); }
+      valText.style.cursor = "pointer";
+      valText.addEventListener("click", clickHandler);
       svg.append(valText);
     }
     drawAxisLabel(svg, x + barWidth / 2, top + height + 24, labels[index], rotate, maxChars);
   });
 }
 
-function drawHorizontalBars(svg, labels, values, pids) {
+function drawHorizontalBars(svg, labels, values, pids, chartIndex = null, variantIndex = 0, chartName = null) {
   const left = 230;
   const top = 14;
   const width = 470;
@@ -122,13 +123,12 @@ function drawHorizontalBars(svg, labels, values, pids) {
     label.append(element("title", {}, labels[index]));
     const bar = element("rect", { x: left, y: barY, width: Math.max(barWidth, 3), height: barHeight, rx: 5, fill: chartColors[index % chartColors.length] });
     const countText = element("text", { x: Math.min(left + barWidth + 10, CHART_WIDTH - 50), y: y + ROW_HEIGHT * 0.64, class: "chart-value" }, value.toLocaleString());
-    if (pids && pids[index]) {
-      const pidList = pids[index];
-      bar.style.cursor = "pointer";
-      bar.addEventListener("click", () => showPidsModal(null, labels[index], pidList));
-      countText.style.cursor = "pointer";
-      countText.addEventListener("click", () => showPidsModal(null, labels[index], pidList));
-    }
+    const pidList = pids && pids[index];
+    const clickHandler = () => showPidsModal(chartName, labels[index], pidList, { chartIndex, variantIndex, categoryIndex: index });
+    bar.style.cursor = "pointer";
+    bar.addEventListener("click", clickHandler);
+    countText.style.cursor = "pointer";
+    countText.addEventListener("click", clickHandler);
     svg.append(
       label,
       element("rect", { x: left, y: barY, width, height: barHeight, rx: 5, class: "chart-bar-track" }),
@@ -189,31 +189,25 @@ function drawBoxPlot(svg, summary) {
   );
 }
 
-function drawLegend(svg, labels, values, x, height, pids) {
+function drawLegend(svg, labels, values, x, height, pids, chartIndex = null, variantIndex = 0, chartName = null) {
   const rowGap = 32;
   const startY = (height - labels.length * rowGap) / 2 + 22;
   labels.forEach((label, index) => {
     const y = startY + index * rowGap;
     const text = element("text", { x: x + 20, y, class: "chart-tick legend-text" }, `${shorten(label, 30)} · ${values[index].toLocaleString()}`);
     text.append(element("title", {}, label));
-    if (pids && pids[index]) {
-      const pidList = pids[index];
-      text.style.cursor = "pointer";
-      text.addEventListener("click", () => showPidsModal(null, label, pidList));
-      const dot = element("circle", { cx: x, cy: y - 5, r: 7, fill: chartColors[index % chartColors.length] });
-      dot.style.cursor = "pointer";
-      dot.addEventListener("click", () => showPidsModal(null, label, pidList));
-      svg.append(dot, text);
-    } else {
-      svg.append(
-        element("circle", { cx: x, cy: y - 5, r: 7, fill: chartColors[index % chartColors.length] }),
-        text,
-      );
-    }
+    const pidList = pids && pids[index];
+    const clickHandler = () => showPidsModal(chartName, label, pidList, { chartIndex, variantIndex, categoryIndex: index });
+    text.style.cursor = "pointer";
+    text.addEventListener("click", clickHandler);
+    const dot = element("circle", { cx: x, cy: y - 5, r: 7, fill: chartColors[index % chartColors.length] });
+    dot.style.cursor = "pointer";
+    dot.addEventListener("click", clickHandler);
+    svg.append(dot, text);
   });
 }
 
-function drawDonut(svg, labels, values, height, pids) {
+function drawDonut(svg, labels, values, height, pids, chartIndex = null, variantIndex = 0, chartName = null) {
   const centerX = 190;
   const centerY = height / 2;
   const radius = 105;
@@ -233,10 +227,10 @@ function drawDonut(svg, labels, values, height, pids) {
       "stroke-dashoffset": -offset,
       transform: `rotate(-90 ${centerX} ${centerY})`,
     });
-    if (pids && pids[index]) {
-      circle.style.cursor = "pointer";
-      circle.addEventListener("click", () => showPidsModal(null, labels[index], pids[index]));
-    }
+    const pidList = pids && pids[index];
+    const clickHandler = () => showPidsModal(chartName, labels[index], pidList, { chartIndex, variantIndex, categoryIndex: index });
+    circle.style.cursor = "pointer";
+    circle.addEventListener("click", clickHandler);
     svg.append(circle);
     offset += segment;
   });
@@ -244,20 +238,19 @@ function drawDonut(svg, labels, values, height, pids) {
     element("text", { x: centerX, y: centerY + 2, "text-anchor": "middle", class: "donut-total" }, total.toLocaleString()),
     element("text", { x: centerX, y: centerY + 26, "text-anchor": "middle", class: "chart-tick" }, "records"),
   );
-  drawLegend(svg, labels, values, 390, height, pids);
+  drawLegend(svg, labels, values, 390, height, pids, chartIndex, variantIndex, chartName);
 }
 
-function drawPie(svg, labels, values, height, pids) {
+function drawPie(svg, labels, values, height, pids, chartIndex = null, variantIndex = 0, chartName = null) {
   const centerX = 200;
   const centerY = height / 2;
   const radius = 125;
   const total = values.reduce((sum, value) => sum + value, 0) || 1;
   if (values.length === 1) {
     const circle = element("circle", { cx: centerX, cy: centerY, r: radius, fill: chartColors[0] });
-    if (pids && pids[0]) {
-      circle.style.cursor = "pointer";
-      circle.addEventListener("click", () => showPidsModal(null, labels[0], pids[0]));
-    }
+    const pidList = pids && pids[0];
+    circle.style.cursor = "pointer";
+    circle.addEventListener("click", () => showPidsModal(chartName, labels[0], pidList, { chartIndex, variantIndex, categoryIndex: 0 }));
     svg.append(circle);
   }
   let angle = -Math.PI / 2;
@@ -281,14 +274,13 @@ function drawPie(svg, labels, values, height, pids) {
       stroke: "white",
       "stroke-width": 2,
     });
-    if (pids && pids[index]) {
-      slice.style.cursor = "pointer";
-      slice.addEventListener("click", () => showPidsModal(null, labels[index], pids[index]));
-    }
+    const pidList = pids && pids[index];
+    slice.style.cursor = "pointer";
+    slice.addEventListener("click", () => showPidsModal(chartName, labels[index], pidList, { chartIndex, variantIndex, categoryIndex: index }));
     svg.append(slice);
     angle = nextAngle;
   });
-  drawLegend(svg, labels, values, 410, height, pids);
+  drawLegend(svg, labels, values, 410, height, pids, chartIndex, variantIndex, chartName);
 }
 
 /* ---------- labels and filters ---------- */
@@ -362,17 +354,17 @@ function renderChart(chartIndex, variantIndex, targetHost = null) {
     const svg = chartSvg(host, `${chart.name}, ${variant.label}`, height);
 
     if (isVertical) {
-      drawVerticalBars(svg, variant.labels, variant.values, variant.pids);
+      drawVerticalBars(svg, variant.labels, variant.values, variant.pids, chartIndex, variantIndex, chart.name);
     } else if (variant.type === "line") {
       drawLine(svg, variant.labels, variant.values);
     } else if (variant.type === "box") {
       drawBoxPlot(svg, variant.summary);
     } else if (variant.type === "pie") {
-      drawPie(svg, variant.labels, variant.values, height, variant.pids);
+      drawPie(svg, variant.labels, variant.values, height, variant.pids, chartIndex, variantIndex, chart.name);
     } else if (variant.type === "donut") {
-      drawDonut(svg, variant.labels, variant.values, height, variant.pids);
+      drawDonut(svg, variant.labels, variant.values, height, variant.pids, chartIndex, variantIndex, chart.name);
     } else {
-      drawHorizontalBars(svg, variant.labels, variant.values, variant.pids);
+      drawHorizontalBars(svg, variant.labels, variant.values, variant.pids, chartIndex, variantIndex, chart.name);
     }
   });
 }
@@ -417,17 +409,19 @@ function renderFrequencyTable(chartIndex, targetHost = null) {
       const countCell = document.createElement("td");
       labelCell.textContent = label;
       const pidList = variant.pids && variant.pids[index];
-      if (pidList && pidList.length) {
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "view-pids-btn";
-        btn.textContent = `${variant.values[index].toLocaleString()} ↗`;
-        btn.title = `View ${pidList.length} PIDs in this category`;
-        btn.addEventListener("click", () => showPidsModal(chart.name, label, pidList));
-        countCell.append(btn);
-      } else {
-        countCell.textContent = variant.values[index].toLocaleString();
-      }
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "view-pids-btn";
+      btn.textContent = `${variant.values[index].toLocaleString()} ↗`;
+      btn.title = `View PIDs in this category`;
+      btn.addEventListener("click", () =>
+        showPidsModal(chart.name, label, pidList, {
+          chartIndex,
+          variantIndex: 0,
+          categoryIndex: index,
+        })
+      );
+      countCell.append(btn);
       row.append(labelCell, countCell);
       body.append(row);
     });
@@ -812,10 +806,61 @@ applyCategoryDimension();
 
 /* ---------- PID viewer modal ---------- */
 
-function showPidsModal(chartName, categoryLabel, pidsList) {
+async function fetchCategoryPids(chartIndex, variantIndex, categoryIndex, chartName, categoryLabel) {
+  const meta = document.getElementById("dataset-meta");
+  const datasetId = meta?.dataset?.datasetId;
+  if (!datasetId) return [];
+  try {
+    const formData = new FormData();
+    if (chartIndex !== null && chartIndex !== undefined) formData.append("chart_index", chartIndex);
+    if (variantIndex !== null && variantIndex !== undefined) formData.append("variant_index", variantIndex);
+    if (categoryIndex !== null && categoryIndex !== undefined) formData.append("category_index", categoryIndex);
+    if (chartName) formData.append("chart_name", chartName);
+    if (categoryLabel) formData.append("category_label", categoryLabel);
+
+    const res = await fetch(`/studies/${datasetId}/category-pids`, {
+      method: "POST",
+      body: formData,
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return Array.isArray(data.pids) ? data.pids : [];
+    }
+  } catch (err) {
+    console.error("Failed to fetch category PIDs:", err);
+  }
+  return [];
+}
+
+async function showPidsModal(chartName, categoryLabel, pidsList, context = null) {
   const modal = document.getElementById("pid-viewer-modal");
   if (!modal) return;
-  const inPids = Array.isArray(pidsList) ? pidsList : [];
+
+  const subtitle = document.getElementById("pid-modal-subtitle");
+  const grid = document.getElementById("pid-chip-grid");
+  const countEl = document.getElementById("pid-modal-count");
+  const toggleBtn = document.getElementById("pid-modal-toggle");
+  const copyBtn = document.getElementById("pid-modal-copy");
+
+  if (subtitle) subtitle.textContent = `${categoryLabel}${chartName ? " \u00b7 " + chartName : ""}`;
+
+  let inPids = Array.isArray(pidsList) ? pidsList : [];
+
+  // If pidsList wasn't embedded (stripped for performance) and context was provided, fetch on demand
+  if (inPids.length === 0 && context) {
+    if (grid) grid.innerHTML = '<div style="padding:1rem;color:var(--color-muted,#6b7280);">Loading PIDs…</div>';
+    if (countEl) countEl.textContent = "Loading…";
+    modal.showModal();
+    inPids = await fetchCategoryPids(
+      context.chartIndex,
+      context.variantIndex ?? 0,
+      context.categoryIndex,
+      chartName,
+      categoryLabel
+    );
+  } else {
+    modal.showModal();
+  }
 
   // Compute the excluded set: all dataset PIDs not in inPids
   const inSet = new Set(inPids.map((p) => String(p).trim().toLowerCase()));
@@ -825,14 +870,6 @@ function showPidsModal(chartName, categoryLabel, pidsList) {
 
   let showingExcluded = false;
   let activeList = inPids;
-
-  const subtitle = document.getElementById("pid-modal-subtitle");
-  const grid = document.getElementById("pid-chip-grid");
-  const countEl = document.getElementById("pid-modal-count");
-  const toggleBtn = document.getElementById("pid-modal-toggle");
-  const copyBtn = document.getElementById("pid-modal-copy");
-
-  if (subtitle) subtitle.textContent = `${categoryLabel}${chartName ? " \u00b7 " + chartName : ""}`;
 
   // Reset toggle state
   if (toggleBtn) {
@@ -939,8 +976,6 @@ function showPidsModal(chartName, categoryLabel, pidsList) {
       }).catch(() => {});
     };
   }
-
-  modal.showModal();
 }
 
 document.getElementById("pid-viewer-close")?.addEventListener("click", () => {
