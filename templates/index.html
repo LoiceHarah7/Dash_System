@@ -64,7 +64,8 @@
             <span class="folder-caption">Study Loading Folder:</span>
             {% if study.saved_path %}
             <span class="folder-path-hidden" id="study-path-display-{{ study.id }}">🔒 Path hidden</span>
-            <button type="button" class="button small view-path-btn" data-study-id="{{ study.id }}" data-target-id="study-path-display-{{ study.id }}">👁 View Path</button>
+            <button type="button" class="button small view-path-btn" data-study-id="{{ study.id }}"
+              data-target-id="study-path-display-{{ study.id }}">👁 View Path</button>
             {% else %}
             <span class="folder-path-empty">No folder assigned</span>
             {% endif %}
@@ -91,12 +92,12 @@
           <span class="stat-pill"><strong>{{ "{:,}".format(study.rows) }}</strong> rows</span>
           <span class="stat-pill"><strong>{{ "{:,}".format(study.columns) }}</strong> columns</span>
           {% if study.clean_columns and study.clean_columns|length > 1 %}
-          <span class="stat-pill pill-key" title="Key: {{ study.clean_columns|join(' + ') }}">🔑 {{
+          <!--<span class="stat-pill pill-key" title="Key: {{ study.clean_columns|join(' + ') }}">🔑 {{
             study.clean_columns|join('+') | truncate(30, True, '…') }}</span>
           {% endif %}
           {% if study.duplicates_removed %}
           <span class="stat-pill pill-cleaned">{{ study.duplicates_removed }} duplicates removed</span>
-          {% endif %}
+          {% endif %}-->
         </div>
       </div>
     </div>
@@ -293,7 +294,8 @@
           <td>
             {% if s.saved_path %}
             <span class="folder-path-hidden" id="history-path-display-{{ s.id }}">🔒 Hidden</span>
-            <button type="button" class="button small view-path-btn" data-study-id="{{ s.id }}" data-target-id="history-path-display-{{ s.id }}">👁 View Path</button>
+            <button type="button" class="button small view-path-btn" data-study-id="{{ s.id }}"
+              data-target-id="history-path-display-{{ s.id }}">👁 View Path</button>
             {% else %}
             <span class="muted">—</span>
             {% endif %}
@@ -337,7 +339,8 @@
     <form id="view-path-form">
       <div class="modal-fields">
         <label class="modal-field-label" for="view-path-password">Authorized Password</label>
-        <input type="password" id="view-path-password" class="modal-input" placeholder="Enter password..." autocomplete="current-password" required>
+        <input type="password" id="view-path-password" class="modal-input" placeholder="Enter password..."
+          autocomplete="current-password" required>
         <p class="modal-error" id="view-path-error" hidden></p>
       </div>
       <div class="modal-footer">
