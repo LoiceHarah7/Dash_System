@@ -2500,45 +2500,13 @@ def build_cleaning_report_only_workbook(dataset):
 
 
 def get_or_seed_tracking(dataset_id, site):
+    """Return saved ParticipantTracking rows for a dataset and site (no auto-seeding)."""
     site_name = "Salima" if str(site).lower() == "salima" else "Lilongwe"
-    records = (
+    return (
         ParticipantTracking.query.filter_by(dataset_id=dataset_id, site=site_name)
         .order_by(ParticipantTracking.pid)
         .all()
     )
-    if not records:
-        try:
-            import tracking_data
-            if site_name == "Lilongwe":
-                seed = tracking_data.get_default_lilongwe_tracking()
-            else:
-                seed = tracking_data.get_default_salima_tracking()
-            new_objs = [
-                ParticipantTracking(
-                    dataset_id=dataset_id,
-                    site=site_name,
-                    pid=r["pid"],
-                    questionnaire_date=r.get("questionnaire_date"),
-                    dental_date=r.get("dental_date"),
-                    endo_status=r.get("endo_status"),
-                    endo_date=r.get("endo_date"),
-                    comment=r.get("comment"),
-                )
-                for r in seed
-            ]
-            db.session.bulk_save_objects(new_objs)
-            db.session.commit()
-            records = (
-                ParticipantTracking.query.filter_by(
-                    dataset_id=dataset_id, site=site_name
-                )
-                .order_by(ParticipantTracking.pid)
-                .all()
-            )
-        except Exception:
-            db.session.rollback()
-            app.logger.exception("Could not auto-seed tracking records")
-    return records
 
 
 def compile_tracking_summary(records, observed_pids_set):
@@ -3578,7 +3546,8 @@ def download_tracking_sheet(dataset_id, site):
                 "COMMENT": r.comment or "",
             }
             for r in records
-        ]
+        ],
+        columns=["PID", "QUESTIONEER", "DENTAL", "ENDO YES/NO", "ENDO DATE", "COMMENT"],
     )
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:

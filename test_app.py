@@ -1214,14 +1214,31 @@ class StudyDashTests(unittest.TestCase):
         self.assertIn(b"Cleaned Data", response.data)
         self.assertIn(b"Report Only", response.data)
 
-        # Check tracking section presence
+        # Check tracking section presence (starts empty until user uploads a tracker)
         self.assertIn(b"Participant Procedure Tracking", response.data)
         self.assertIn(b"Lilongwe Site (ESD-01)", response.data)
         self.assertIn(b"Salima Site (ESD-02)", response.data)
-        self.assertIn(b"ESD-01-0001", response.data)
-        self.assertIn(b"Could not tolerate scope", response.data)
-        self.assertIn(b"Refused further participation", response.data)
-        self.assertIn(b"Esophageal Varices", response.data)
+        self.assertIn(b"0 tracked", response.data)
+
+        # Upload tracking sheet for Lilongwe
+        new_lilongwe_csv = (
+            b"PID,QUESTIONEER,DENTAL,ENDO YES/NO,ENDO DATE,COMMENT\n"
+            b"ESD-01-0001,01/03/2024,01/03/2024,NO,,Could not tolerate scope\n"
+            b"ESD-01-0002,02/03/2024,02/03/2024,NO,,Refused further participation\n"
+        )
+        resp_lilongwe = self.client.post(
+            "/studies/1/tracking/upload",
+            data={
+                "site": "Lilongwe",
+                "tracking_file": (io.BytesIO(new_lilongwe_csv), "lilongwe_track.csv"),
+            },
+            content_type="multipart/form-data",
+            follow_redirects=True,
+        )
+        self.assertEqual(resp_lilongwe.status_code, 200)
+        self.assertIn(b"ESD-01-0001", resp_lilongwe.data)
+        self.assertIn(b"Could not tolerate scope", resp_lilongwe.data)
+        self.assertIn(b"Refused further participation", resp_lilongwe.data)
 
         # Download tracking sheet for Lilongwe
         resp_track = self.client.get("/studies/1/tracking/download/lilongwe")
